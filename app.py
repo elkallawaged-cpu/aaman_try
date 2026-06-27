@@ -8,26 +8,46 @@ import os
 import tempfile
 
 # 1. إعداد واجهة المستخدم
-st.set_page_config(page_title="Universal AI Knowledge Assistant", layout="wide")
-st.title("📂 Multi-Source AI Knowledge Assistant (Ultimate RAG)")
-st.subheader("ارفع ملفات (PDF/Word) أو ضع رابط موقع وابدأ الشات فوراً")
+st.set_page_config(page_title="Mega AI Knowledge Hub", layout="wide")
+st.title("🚀 Mega AI Knowledge Hub & Reasoning Engine")
+st.subheader("اجمع كل ملفاتك وروابطك في مكان واحد، وخلي الـ AI يربط الأحداث بذكاء!")
 
 # جلب المفتاح من الـ Secrets
 if "GEMINI_API_KEY" in st.secrets:
     SECRET_KEY = st.secrets["GEMINI_API_KEY"]
     genai.configure(api_key=SECRET_KEY)
-    st.info(f"⚙️ الـ API Key النشط يبدأ بـ: `{SECRET_KEY[:8]}...`")
 else:
     st.error("رجاءً تأكد من إضافة GEMINI_API_KEY في الـ Secrets الخاص بـ Streamlit.")
     st.stop()
 
-# جلب الموديلات المتاحة من جوجل مباشرة
-try:
-    models_list = [m.name.split('/')[-1] for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
-    default_index = models_list.index("gemini-2.0-flash") if "gemini-2.0-flash" in models_list else 0
-    selected_model = st.selectbox("🤖 اختر الموديل النشط في حسابك:", models_list, index=default_index)
-except Exception as e:
-    selected_model = "gemini-2.0-flash"
+# ⚙️ شريط الإعدادات الجانبي (Sidebar)
+with st.sidebar:
+    st.header("🛠️ لوحة التحكم الذكية")
+    
+    # جلب الموديلات المتاحة تلقائياً
+    try:
+        models_list = [m.name.split('/')[-1] for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
+        default_index = models_list.index("gemini-2.0-flash") if "gemini-2.0-flash" in models_list else 0
+        selected_model = st.selectbox("🤖 الموديل النشط:", models_list, index=default_index)
+    except:
+        selected_model = "gemini-2.0-flash"
+        
+    st.divider()
+    
+    # الخيار العبقري اللي طلبته: تحديد نمط تفكير الـ AI
+    reasoning_mode = st.radio(
+        "🧠 نمط تفكير وتحليل الـ AI:",
+        [
+            "🔒 التزام صارم (Strict Context): إجابات من داخل الملفات فقط بدون أي اجتهاد.",
+            "💡 ذكاء مختلط (Hybrid Reasoning): الربط بين معلومات الملفات وذكاء الموديل العام للتحليل والاستنتاج."
+        ]
+    )
+    
+    st.divider()
+    if st.button("🗑️ تفريغ الذاكرة والشات"):
+        st.session_state.chat_history = []
+        st.session_state.vector_store = None
+        st.rerun()
 
 # 2. إدارة الـ Session State
 if "chat_history" not in st.session_state:
@@ -35,78 +55,85 @@ if "chat_history" not in st.session_state:
 if "vector_store" not in st.session_state:
     st.session_state.vector_store = None
 
-# 3. واجهة إدخال البيانات (ملف أو رابط)
-st.write("### 📥 تزويد قاعدة المعرفة بالبيانات")
-tab1, tab2 = st.tabs(["📄 رفع ملف (PDF / Word)", "🌐 رابط موقع (URL)"])
-
-docs = []
-process_trigger = False
-
-with tab1:
-    uploaded_file = st.file_uploader("اختر ملف PDF أو Word (.docx)", type=["pdf", "docx"])
-    if uploaded_file:
-        if st.button("🚀 معالجة وبناء المعرفة من الملف"):
-            process_trigger = True
-
-with tab2:
-    url_input = st.text_input("أدخل رابط الموقع بالكامل:", placeholder="https://example.com")
-    if url_input:
-        if st.button("🚀 معالجة وبناء المعرفة من الرابط"):
-            process_trigger = True
-
-# معالجة البيانات وتحويلها لـ Vectors
-if process_trigger:
-    with st.spinner("جاري استخراج البيانات وبناء قاعدة المعرفة المتجهة..."):
-        try:
-            # تصفير قاعدة المعرفة القديمة لاستقبال الجديدة
-            st.session_state.vector_store = None
-            
-            if uploaded_file and not url_input:
-                # معالجة الملفات المرفوعة
-                suffix = ".pdf" if uploaded_file.name.endswith(".pdf") else ".docx"
-                with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp_file:
-                    tmp_file.write(uploaded_file.getvalue())
-                    tmp_file_path = tmp_file.name
-
-                if suffix == ".pdf":
-                    loader = PyPDFLoader(tmp_file_path)
-                else:
-                    loader = Docx2txtLoader(tmp_file_path)
-                
-                docs = loader.load()
-                if os.path.exists(tmp_file_path):
-                    os.remove(tmp_file_path)
+# 3. صندوق التغذية الشامل (Multi-Source Ingestion Container)
+st.write("### 📥 لوحة تغذية قاعدة المعرفة (رفع متعدد للمصادر)")
+with st.expander("📂 اضغط هنا لإضافة ملفاتك وروابطك معاً", expanded=st.session_state.vector_store is None):
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        # دعم رفع أكتر من ملف في نفس الوقت (PDF و DOCX)
+        uploaded_files = st.file_uploader(
+            "رفع ملفات متعددة (PDF / Word):", 
+            type=["pdf", "docx"], 
+            accept_multiple_files=True
+        )
+        
+    with col2:
+        # إضافة أكتر من رابط موقع (رابط في كل سطر)
+        urls_input = st.text_area(
+            "أدخل روابط المواقع (رابط واحد في كل سطر):", 
+            placeholder="https://example1.com\nhttps://example2.com"
+        )
+        
+    st.write("---")
+    if st.button("🔥 ادمج وابنِ قاعدة المعرفة الشاملة حالاً"):
+        all_docs = []
+        
+        with st.spinner("جاري سحب البيانات من جميع المصادر وتصنيفها..."):
+            # أولاً: معالجة كل الملفات المرفوعة
+            if uploaded_files:
+                for u_file in uploaded_files:
+                    suffix = ".pdf" if u_file.name.endswith(".pdf") else ".docx"
+                    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp_file:
+                        tmp_file.write(u_file.getvalue())
+                        tmp_file_path = tmp_file.name
                     
-            elif url_input:
-                # معالجة روابط المواقع
-                loader = WebBaseLoader(url_input)
-                docs = loader.load()
-
-            if docs:
+                    try:
+                        loader = PyPDFLoader(tmp_file_path) if suffix == ".pdf" else Docx2txtLoader(tmp_file_path)
+                        file_docs = loader.load()
+                        # حركة صايعة: بنجبر السورس يشيل اسم الملف الحقيقي مش المسار المؤقت
+                        for d in file_docs:
+                            d.metadata["source"] = u_file.name
+                        all_docs.extend(file_docs)
+                    except Exception as fe:
+                        st.error(f"خطأ في قراءة الملف {u_file.name}: {fe}")
+                    finally:
+                        if os.path.exists(tmp_file_path):
+                            os.remove(tmp_file_path)
+                            
+            # ثانياً: معالجة كل الروابط المكتوبة
+            if urls_input.strip():
+                urls = [url.strip() for url in urls_input.split("\n") if url.strip()]
+                for url in urls:
+                    try:
+                        loader = WebBaseLoader(url)
+                        url_docs = loader.load()
+                        for d in url_docs:
+                            d.metadata["source"] = url
+                        all_docs.extend(url_docs)
+                    except Exception as ue:
+                        st.error(f"خطأ في سحب بيانات الرابط {url}: {ue}")
+            
+            # ثالثاً: تقسيم النصوص وبناء الـ Vector Store المشترك
+            if all_docs:
                 text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
-                splits = text_splitter.split_documents(docs)
-
-                embeddings = GoogleGenerativeAIEmbeddings(
-                    model="gemini-embedding-001", 
-                    google_api_key=SECRET_KEY
-                )
+                splits = text_splitter.split_documents(all_docs)
                 
+                embeddings = GoogleGenerativeAIEmbeddings(model="gemini-embedding-001", google_api_key=SECRET_KEY)
                 st.session_state.vector_store = FAISS.from_documents(splits, embeddings)
-                st.success("🎯 تم تحديث قاعدة المعرفة بنجاح! جاهز لتلقي الأسئلة.")
+                st.success(f"🎯 العظمة تمت بنجاح! تم دمج وثقب {len(all_docs)} مصدر بنجاح في ذاكرة الـ AI.")
             else:
-                st.error("فشل استخراج أي نصوص من المصدر المحدّد.")
-        except Exception as e:
-            st.error(f"حدث خطأ أثناء المعالجة: {e}")
+                st.warning("برجاء إضافة مصادر (ملفات أو روابط) أولاً قبل الضغط على الزر.")
 
-# 4. واجهة المحادثة
+# 4. واجهة المحادثة الذكية وعرض المصادر
 st.divider()
-st.write("### 💬 نافذة المحادثة الذكية")
+st.write("### 💬 نافذة المحادثة التحليلية")
 
 for role, text in st.session_state.chat_history:
     with st.chat_message(role):
         st.write(text)
 
-user_query = st.chat_input("اسألني أي شيء عن الملف أو الرابط المرفوع...")
+user_query = st.chat_input("اسألني أي سؤال، وهجيبلك الإجابة مع ربط المصادر...")
 
 if user_query:
     with st.chat_message("user"):
@@ -115,33 +142,53 @@ if user_query:
 
     with st.chat_message("assistant"):
         try:
-            system_instruction = (
-                "أنت مساعد ذكي ومحترف وظيفتك الإجابة على أسئلة المستخدم بناءً على السياق (Context) المرفق فقط. "
-                "إذا كانت الإجابة غير موجودة في السياق، قل بكل وضوح 'المعلومة غير متوفرة في المصادر المرفوعة' ولا تقم باختراع إجابات."
-            )
+            # صياغة الـ System Instructions بناءً على اختيار المستخدم من الـ Sidebar
+            if "التزام صارم" in reasoning_mode:
+                system_instruction = (
+                    "أنت مساعد ذكي ومحترف. يجب عليك الإجابة على أسئلة المستخدم بناءً *فقط* على السياق المرفق. "
+                    "إذا لم تكن الإجابة موجودة حرفياً في السياق، قل بكل وضوح 'المعلومة غير متوفرة في الملفات المرفوعة' ولا تخترع أي شيء."
+                )
+            else:
+                system_instruction = (
+                    "أنت خبير ومحلل ذكاء اصطناعي عبقري. مهمتك هي الدمج والربط بين السياق المرفق (Context) وبين "
+                    "معلوماتك العامة العميقة وقدرتك على الاستنتاج والتحليل. قم بربط الخيوط ببعضها لحل مسألة المستخدم بذكاء. "
+                    "إذا استخدمت معلومات خارجية للربط والتحليل، وضح ذلك بذكاء للمستخدم (مثال: بناءً على الأوراق المرفقة مضافاً إليها التحليل الهندسي...)."
+                )
             
-            model = genai.GenerativeModel(
-                model_name=selected_model, 
-                system_instruction=system_instruction
-            )
+            model = genai.GenerativeModel(model_name=selected_model, system_instruction=system_instruction)
 
             if st.session_state.vector_store is not None:
-                with st.spinner("جاري البحث في قاعدة المعرفة..."):
-                    docs = st.session_state.vector_store.similarity_search(user_query, k=4)
-                    context = "\n\n".join([doc.page_content for doc in docs])
-                    full_prompt = f"السياق المستخرج:\n{context}\n\nسؤال المستخدم:\n{user_query}"
+                with st.spinner("جاري البحث في قاعدة المعرفة الموحدة والربط الذكي..."):
+                    # البحث عن الفقرات الشبيهة
+                    retrieved_docs = st.session_state.vector_store.similarity_search(user_query, k=5)
+                    
+                    # استخراج المصادر الفريدة اللي الـ AI جاب منها الكلام
+                    sources = set([d.metadata.get("source", "مصدر غير معروف") for d in retrieved_docs])
+                    
+                    context = "\n\n".join([d.page_content for d in retrieved_docs])
+                    full_prompt = f"السياق المستخرج من مصادرك الشاملة:\n{context}\n\nسؤال المستخدم التحليلي:\n{user_query}"
+                    
                     response = model.generate_content(full_prompt)
                     answer = response.text
+                    
+                    # عرض الإجابة
+                    st.write(answer)
+                    
+                    # 🔥 حركة إظهار السورسات بشكل شيك جداً تحت الإجابة
+                    st.markdown("##### 📌 المصادر التي تم الاعتماد عليها في البحث:")
+                    for src in sources:
+                        st.caption(f"• `{src}`")
             else:
-                with st.spinner("جاري التفكير المباشر..."):
+                # لو مفيش ملفات، يشتغل بذكائه العام مباشرة
+                with st.spinner("جاري التفكير والتحليل العام..."):
                     response = model.generate_content(user_query)
                     answer = response.text
+                    st.write(answer)
 
-            st.write(answer)
             st.session_state.chat_history.append(("assistant", answer))
 
         except Exception as api_error:
             if "429" in str(api_error) or "quota" in str(api_error).lower():
-                st.warning("⚠️ كوتا الموديل الحالي مضغوطة. جرب تغيير الموديل من القائمة المنسدلة فوق.")
+                st.warning("⚠️ كوتا الموديل ده مش قادرة، غير الموديل من القائمة اللي في الجنب (Sidebar) وجرب تاني حالاً.")
             else:
-                st.error(f"عذراً، واجه الموديل مشكلة. التفاصيل: {api_error}")
+                st.error(f"حدث خطأ أثناء معالجة الرد: {api_error}")
