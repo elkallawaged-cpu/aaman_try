@@ -1,10 +1,9 @@
 import streamlit as st
-import google.generativeai as genai
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
 from langchain_core.prompts import ChatPromptTemplate
-from langchain_google_genai import GoogleGenerativeAIEmbeddings
+from langchain_google_genai import GoogleGenerativeAIEmbeddings, ChatGoogleGenerativeAI  # توحيد المكتبات الرسمية
 import os
 import tempfile
 
@@ -15,7 +14,6 @@ st.subheader("ارفع أي ملف وابدأ الشات معاه فوراً")
 
 # جلب الـ API Key من الـ Secrets بأمان تام
 GEMINI_API_KEY = st.secrets["GEMINI_API_KEY"]
-genai.configure(api_key=GEMINI_API_KEY)
 
 # 2. إدارة الـ Session State للشات والـ Vector Store
 if "chat_history" not in st.session_state:
@@ -39,7 +37,7 @@ if uploaded_file is not None and st.session_state.vector_store is None:
             text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
             splits = text_splitter.split_documents(docs)
 
-            # استخدام الموديل المستقر والمعتمد
+            # الـ Embeddings المستقرة
             embeddings = GoogleGenerativeAIEmbeddings(
                 model="gemini-embedding-001", 
                 google_api_key=GEMINI_API_KEY
@@ -69,6 +67,12 @@ if user_query:
     st.session_state.chat_history.append(("user", user_query))
 
     with st.chat_message("assistant"):
+        # إعداد موديول التوليد الموّحد من لانج تشين مباشرة
+        llm = ChatGoogleGenerativeAI(
+            model="gemini-1.5-flash", 
+            google_api_key=GEMINI_API_KEY
+        )
+
         if st.session_state.vector_store is not None:
             with st.spinner("جاري البحث في الملف وتوليد الإجابة النموذجية..."):
                 docs = st.session_state.vector_store.similarity_search(user_query, k=4)
@@ -85,20 +89,16 @@ if user_query:
                 {question}
                 """)
                 
-                formatted_prompt = prompt_template.format(context=context, question=user_query)
+                # تشغيل الـ Chain الموحدة بسلاسة وبدون تضارب سيرفرات
+                chain = prompt_template | llm
+                response = chain.invoke({"context": context, "question": user_query})
                 
-                # تم تصحيح مسار الموديل هنا بإضافة الـ prefix الرسمي
-                model = genai.GenerativeModel("models/gemini-1.5-flash")
-                response = model.generate_content(formatted_prompt)
-                
-                answer = response.text
+                answer = response.content
                 st.write(answer)
                 st.session_state.chat_history.append(("assistant", answer))
         else:
             with st.spinner("جاري التفكير..."):
-                # تم تصحيح مسار الموديل هنا أيضاً لضمان عمل الشات العام
-                model = genai.GenerativeModel("models/gemini-1.5-flash")
-                response = model.generate_content(user_query)
-                answer = response.text
+                response = llm.invoke(user_query)
+                answer = response.content
                 st.write(answer)
                 st.session_state.chat_history.append(("assistant", answer))
