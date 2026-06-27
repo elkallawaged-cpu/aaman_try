@@ -16,12 +16,19 @@ st.subheader("ارفع أي ملف وابدأ الشات معاه فوراً")
 if "GEMINI_API_KEY" in st.secrets:
     SECRET_KEY = st.secrets["GEMINI_API_KEY"]
     genai.configure(api_key=SECRET_KEY)
-    
-    # سطر الفحص الحاسم - هيطبع أول 8 حروف من المفتاح اللي قاري منه السيرفر حالياً
-    st.info(f"⚙️ الـ API Key النشط في السيرفر حالياً يبدأ بـ: `{SECRET_KEY[:8]}...` (قارنه بمفتاحك الجديد)")
+    st.info(f"⚙️ الـ API Key النشط يبدأ بـ: `{SECRET_KEY[:8]}...`")
 else:
     st.error("رجاءً تأكد من إضافة GEMINI_API_KEY في الـ Secrets الخاص بـ Streamlit.")
     st.stop()
+
+# 🔍 خطوة ذكية: جلب الموديلات المتاحة فعلياً في حسابك من جوجل مباشرة
+try:
+    models_list = [m.name.split('/')[-1] for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
+    default_index = models_list.index("gemini-2.0-flash") if "gemini-2.0-flash" in models_list else 0
+    selected_model = st.selectbox("🤖 اختر الموديل الشغال والمتاح في حسابك حالياً:", models_list, index=default_index)
+except Exception as e:
+    st.warning(f"لم نتمكن من جلب لستة الموديلات تلقائياً، سيتم استخدام الموديل الافتراضي. التفاصيل: {e}")
+    selected_model = "gemini-2.0-flash"
 
 # 2. إدارة الـ Session State للشات والـ Vector Store
 if "chat_history" not in st.session_state:
@@ -80,9 +87,9 @@ if user_query:
                 "إذا كانت الإجابة غير موجودة في السياق، قل بكل وضوح 'المعلومة غير متوفرة في الملف المرفوع' ولا تقم باختراع إجابات."
             )
             
-            # العودة للموديل الصحيح والمدعوم بالكامل
+            # استخدام الموديل الذي تم اختياره ديناميكياً من الشاشة
             model = genai.GenerativeModel(
-                model_name="gemini-2.0-flash", 
+                model_name=selected_model, 
                 system_instruction=system_instruction
             )
 
@@ -105,6 +112,6 @@ if user_query:
 
         except Exception as api_error:
             if "429" in str(api_error) or "quota" in str(api_error).lower():
-                st.warning("⚠️ تم تجاوز حد الطلبات. المفتاح النشط حالياً مستهلك، يرجى تحديث الـ Secrets من لوحة تحكم Streamlit أونلاين ومطابقة الحروف الظاهرة فوق.")
+                st.warning(f"⚠️ الموديل الحالي [{selected_model}] كوتا بتاعته مقفولة (limit 0) أو مضغوط. جرب تختار موديل آخر من القائمة المنسدلة فوق واكتب سؤالك تاني.")
             else:
                 st.error(f"عذراً، واجه الموديل مشكلة أثناء توليد الإجابة. التفاصيل: {api_error}")
