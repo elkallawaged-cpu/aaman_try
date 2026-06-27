@@ -39,9 +39,9 @@ if uploaded_file is not None and st.session_state.vector_store is None:
             text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
             splits = text_splitter.split_documents(docs)
 
-            # استخدام الأداة الرسمية لإرسال البيانات دفعة واحدة بأمان وبدون لوپ
+            # استخدام الموديل الجديد المستقر والمعتمد بدلاً من الموقوف
             embeddings = GoogleGenerativeAIEmbeddings(
-                model="models/text-embedding-004", 
+                model="gemini-embedding-001", 
                 google_api_key=GEMINI_API_KEY
             )
             
