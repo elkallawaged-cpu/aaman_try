@@ -102,3 +102,9 @@ if user_query:
 
         except Exception as api_error:
             st.error(f"عذراً، واجه الموديل مشكلة أثناء توليد الإجابة. السبب الحقيقي: {api_error}")
+except Exception as api_error:
+            # صيد ذكي لخطأ الكوتا والـ Rate Limit وعرضه بشكل شيك
+            if "429" in str(api_error) or "quota" in str(api_error).lower():
+                st.warning("⚠️ سيرفرات جوجل مضغوطة حالياً أو تم تجاوز الحد المسموح للدقيقة. رجاءً انتظر 15 ثانية واضغط على زرار الإرسال مجدداً.")
+            else:
+                st.error(f"عذراً، واجه الموديل مشكلة أثناء توليد الإجابة. التفاصيل: {api_error}")
