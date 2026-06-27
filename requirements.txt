@@ -1,8 +1,8 @@
-google-generativeai
+streamlit
 langchain
 langchain-community
-langchain-core
-langchain-text-splitters
-pypdf
-faiss-cpu
 langchain-google-genai
+faiss-cpu
+pypdf
+docx2txt
+beautifulsoup4
