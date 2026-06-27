@@ -77,7 +77,6 @@ if user_query:
                 "إذا كانت الإجابة غير موجودة في السياق، قل بكل وضوح 'المعلومة غير متوفرة في الملف المرفوع' ولا تقم باختراع إجابات."
             )
             
-            # تم التحديث إلى الموديل الأحدث والأكثر استقراراً للنظام الحالي
             model = genai.GenerativeModel(
                 model_name="gemini-2.0-flash", 
                 system_instruction=system_instruction
@@ -101,10 +100,7 @@ if user_query:
             st.session_state.chat_history.append(("assistant", answer))
 
         except Exception as api_error:
-            st.error(f"عذراً، واجه الموديل مشكلة أثناء توليد الإجابة. السبب الحقيقي: {api_error}")
-except Exception as api_error:
-            # صيد ذكي لخطأ الكوتا والـ Rate Limit وعرضه بشكل شيك
             if "429" in str(api_error) or "quota" in str(api_error).lower():
-                st.warning("⚠️ سيرفرات جوجل مضغوطة حالياً أو تم تجاوز الحد المسموح للدقيقة. رجاءً انتظر 15 ثانية واضغط على زرار الإرسال مجدداً.")
+                st.warning("⚠️ سيرفرات جوجل مضغوطة حالياً أو تم تجاوز الحد المسموح للدقيقة. رجاءً انتظر 15 ثانية واكتب سؤالك مجدداً.")
             else:
                 st.error(f"عذراً، واجه الموديل مشكلة أثناء توليد الإجابة. التفاصيل: {api_error}")
