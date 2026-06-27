@@ -12,9 +12,9 @@ st.set_page_config(page_title="Universal AI Knowledge Assistant", layout="wide")
 st.title("📂 Universal AI Knowledge Assistant (Dynamic RAG)")
 st.subheader("ارفع أي ملف وابدأ الشات معاه فوراً")
 
-# تعيين المفتاح كمتغير بيئة رسمي لمنع أي تضارب في الصلاحيات داخلياً
+# جلب المفتاح في متغير واضح
 if "GEMINI_API_KEY" in st.secrets:
-    os.environ["GOOGLE_API_KEY"] = st.secrets["GEMINI_API_KEY"]
+    SECRET_KEY = st.secrets["GEMINI_API_KEY"]
 else:
     st.error("رجاءً تأكد من إضافة GEMINI_API_KEY في الـ Secrets الخاص بـ Streamlit.")
     st.stop()
@@ -41,8 +41,11 @@ if uploaded_file is not None and st.session_state.vector_store is None:
             text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
             splits = text_splitter.split_documents(docs)
 
-            # الـ Embeddings المستقرة المعتمِدة على متغيرات البيئة
-            embeddings = GoogleGenerativeAIEmbeddings(model="gemini-embedding-001")
+            # تمرير المفتاح بشكل صريح هنا للموديل
+            embeddings = GoogleGenerativeAIEmbeddings(
+                model="gemini-embedding-001", 
+                google_api_key=SECRET_KEY
+            )
             
             st.session_state.vector_store = FAISS.from_documents(splits, embeddings)
             st.success("تم تحليل الملف وبناء قاعدة المعرفة بنجاح! يمكنك البدء بالأسئلة الآن.")
@@ -68,10 +71,15 @@ if user_query:
     st.session_state.chat_history.append(("user", user_query))
 
     with st.chat_message("assistant"):
-        llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash", temperature=0.3)
+        # تمرير المفتاح بشكل صريح هنا أيضاً للموديل
+        llm = ChatGoogleGenerativeAI(
+            model="gemini-1.5-flash", 
+            temperature=0.3, 
+            google_api_key=SECRET_KEY
+        )
 
         if st.session_state.vector_store is not None:
-            with st.spinner("loading"):
+            with st.spinner("loading..."):
                 docs = st.session_state.vector_store.similarity_search(user_query, k=4)
                 context = "\n\n".join([doc.page_content for doc in docs])
 
