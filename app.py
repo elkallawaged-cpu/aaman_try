@@ -89,4 +89,4 @@ if user_query:
                 st.write(answer)
                 st.session_state.chat_history.append(("assistant", answer))
         else:
-            with st.spinner("loading")
+            with st.spinner("loading"):
