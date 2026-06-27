@@ -4,7 +4,7 @@ from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
 from langchain_core.prompts import ChatPromptTemplate
-from langchain_google_genai import GoogleGenerativeAIEmbeddings  # المكتبة الرسمية المستقرة
+from langchain_google_genai import GoogleGenerativeAIEmbeddings
 import os
 import tempfile
 
@@ -39,7 +39,7 @@ if uploaded_file is not None and st.session_state.vector_store is None:
             text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
             splits = text_splitter.split_documents(docs)
 
-            # استخدام الموديل الجديد المستقر والمعتمد بدلاً من الموقوف
+            # استخدام الموديل المستقر والمعتمد
             embeddings = GoogleGenerativeAIEmbeddings(
                 model="gemini-embedding-001", 
                 google_api_key=GEMINI_API_KEY
@@ -87,7 +87,8 @@ if user_query:
                 
                 formatted_prompt = prompt_template.format(context=context, question=user_query)
                 
-                model = genai.GenerativeModel("gemini-1.5-flash")
+                # تم تصحيح مسار الموديل هنا بإضافة الـ prefix الرسمي
+                model = genai.GenerativeModel("models/gemini-1.5-flash")
                 response = model.generate_content(formatted_prompt)
                 
                 answer = response.text
@@ -95,7 +96,8 @@ if user_query:
                 st.session_state.chat_history.append(("assistant", answer))
         else:
             with st.spinner("جاري التفكير..."):
-                model = genai.GenerativeModel("gemini-1.5-flash")
+                # تم تصحيح مسار الموديل هنا أيضاً لضمان عمل الشات العام
+                model = genai.GenerativeModel("models/gemini-1.5-flash")
                 response = model.generate_content(user_query)
                 answer = response.text
                 st.write(answer)
