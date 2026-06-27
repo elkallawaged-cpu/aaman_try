@@ -16,6 +16,9 @@ st.subheader("ارفع أي ملف وابدأ الشات معاه فوراً")
 if "GEMINI_API_KEY" in st.secrets:
     SECRET_KEY = st.secrets["GEMINI_API_KEY"]
     genai.configure(api_key=SECRET_KEY)
+    
+    # سطر فحص ذكي للتأكد من تحديث المفتاح أونلاين (يطبع أول 8 حروف فقط)
+    st.info(f"⚙️ الـ API Key النشط حالياً يبدأ بـ: `{SECRET_KEY[:8]}...` (تأكد أنه يطابق مفتاح مشروعك الجديد)")
 else:
     st.error("رجاءً تأكد من إضافة GEMINI_API_KEY في الـ Secrets الخاص بـ Streamlit.")
     st.stop()
@@ -78,7 +81,7 @@ if user_query:
             )
             
             model = genai.GenerativeModel(
-                model_name="gemini-2.0-flash", 
+                model_name="gemini-1.5-pro", 
                 system_instruction=system_instruction
             )
 
@@ -101,6 +104,6 @@ if user_query:
 
         except Exception as api_error:
             if "429" in str(api_error) or "quota" in str(api_error).lower():
-                st.warning("⚠️ سيرفرات جوجل مضغوطة حالياً أو تم تجاوز الحد المسموح للدقيقة. رجاءً انتظر 15 ثانية واكتب سؤالك مجدداً.")
+                st.warning("⚠️ تم تجاوز حد الطلبات المسموح. تأكد من تحديث الـ Key في إعدادات شاشة Streamlit الأونلاين وليس الكود فقط.")
             else:
                 st.error(f"عذراً، واجه الموديل مشكلة أثناء توليد الإجابة. التفاصيل: {api_error}")
