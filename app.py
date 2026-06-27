@@ -8,10 +8,8 @@ import google.generativeai as genai
 import os
 import tempfile
 
-# 1. إعداد الصفحة والواجهة الاحترافية
 st.set_page_config(page_title="مثال على تقنية RAG", layout="wide", page_icon="🚀")
 
-# الحقن السحري للـ CSS لتجميل الواجهة وجعلها تبدو كـ تطبيق شركات مدفوع
 st.markdown("""
     <style>
     @import url('https://fonts.googleapis.com/css2?family=Cairo:wght=300;400;700&display=swap');
@@ -60,7 +58,6 @@ st.markdown("""
 st.markdown('<div class="main-title">🚀 مثال على تقنية RAG (Retrieval-Augmented Generation)</div>', unsafe_allow_html=True)
 st.markdown('<div class="sub-title">نظام المساعد الذكي المخصص لربط وتحليل البيانات والملفات المؤسسية</div>', unsafe_allow_html=True)
 
-# القسم التعريفي للشركات
 st.markdown("""
 <div class="business-section">
     <div class="business-title">🎯 ليه تستخدم طريقة الـ RAG دي لشركتك بالذات؟</div>
@@ -75,7 +72,6 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
-# جلب المفتاح من الـ Secrets
 if "GEMINI_API_KEY" in st.secrets:
     SECRET_KEY = st.secrets["GEMINI_API_KEY"]
     genai.configure(api_key=SECRET_KEY)
@@ -83,7 +79,6 @@ else:
     st.error("رجاءً تأكد من إضافة GEMINI_API_KEY في الـ Secrets الخاص بـ Streamlit.")
     st.stop()
 
-# 2. إدارة الـ Session State
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
 if "vector_store" not in st.session_state:
@@ -93,7 +88,6 @@ if "meta_stats" not in st.session_state:
 if "quick_input" not in st.session_state:
     st.session_state.quick_input = ""
 
-# ⚙️ شريط الإعدادات الجانبي (Sidebar)
 with st.sidebar:
     st.markdown("### 🛠️ هندسة النظام")
     try:
@@ -122,7 +116,6 @@ with st.sidebar:
         st.session_state.meta_stats = {"files": 0, "urls": 0, "chunks": 0}
         st.rerun()
 
-# 3. لوحة التغذية الشاملة
 st.markdown("### 📥 لوحة تغذية قاعدة المعرفة للمؤسسات")
 with st.expander("📂 اضغط هنا لرفع مستندات الشركة أو روابطها", expanded=st.session_state.vector_store is None):
     col1, col2 = st.columns(2)
@@ -153,14 +146,12 @@ with st.expander("📂 اضغط هنا لرفع مستندات الشركة أو
                     if u_file.name.endswith(".txt"):
                         try:
                             string_data = u_file.getvalue().decode("utf-8")
-                            # تقسيم الملف لسطور أو الاحتفاظ به كنص كامل
                             file_docs = [Document(page_content=string_data, metadata={"source": u_file.name})]
                             all_docs.extend(file_docs)
                             file_count += 1
                         except Exception as te:
                             st.error(f"خطأ في قراءة ملف التكست {u_file.name}: {te}")
                     else:
-                        # معالجة الـ PDF والـ Word المعتادة
                         suffix = ".pdf" if u_file.name.endswith(".pdf") else ".docx"
                         with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp_file:
                             tmp_file.write(u_file.getvalue())
@@ -193,7 +184,6 @@ with st.expander("📂 اضغط هنا لرفع مستندات الشركة أو
                         st.error(f"خطأ في الرابط {url}: {ue}")
             
             if all_docs:
-                # تقسيم النصوص ذكياً لقطع مناسبة للحسابات الرقمية
                 text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
                 splits = text_splitter.split_documents(all_docs)
                 
@@ -210,7 +200,6 @@ with st.expander("📂 اضغط هنا لرفع مستندات الشركة أو
             else:
                 st.warning("برجاء إدخال بيانات صحيحة أولاً.")
 
-# 📊 لوحة العدادات الذكية
 if st.session_state.vector_store is not None:
     st.write("---")
     m1, m2, m3 = st.columns(3)
@@ -235,7 +224,6 @@ if st.session_state.vector_store is not None:
         if st.button("📈 تقرير عام: ما هي الشكوى التقنية المتكررة في تطبيق الساعة الذكية؟"):
             st.session_state.quick_input = "استخرج الشكوى الخاصة بتطبيق الساعة الذكية Pro، ولماذا تستهلك البطارية بشكل مرعب؟"
 
-# 4. واجهة المحادثة المصقولة
 st.write("---")
 st.write("### 💬 نافذة الاستعلام والتحليل الذكي")
 
