@@ -17,8 +17,8 @@ if "GEMINI_API_KEY" in st.secrets:
     SECRET_KEY = st.secrets["GEMINI_API_KEY"]
     genai.configure(api_key=SECRET_KEY)
     
-    # سطر فحص ذكي للتأكد من تحديث المفتاح أونلاين (يطبع أول 8 حروف فقط)
-    st.info(f"⚙️ الـ API Key النشط حالياً يبدأ بـ: `{SECRET_KEY[:8]}...` (تأكد أنه يطابق مفتاح مشروعك الجديد)")
+    # سطر الفحص الحاسم - هيطبع أول 8 حروف من المفتاح اللي قاري منه السيرفر حالياً
+    st.info(f"⚙️ الـ API Key النشط في السيرفر حالياً يبدأ بـ: `{SECRET_KEY[:8]}...` (قارنه بمفتاحك الجديد)")
 else:
     st.error("رجاءً تأكد من إضافة GEMINI_API_KEY في الـ Secrets الخاص بـ Streamlit.")
     st.stop()
@@ -80,8 +80,9 @@ if user_query:
                 "إذا كانت الإجابة غير موجودة في السياق، قل بكل وضوح 'المعلومة غير متوفرة في الملف المرفوع' ولا تقم باختراع إجابات."
             )
             
+            # العودة للموديل الصحيح والمدعوم بالكامل
             model = genai.GenerativeModel(
-                model_name="gemini-1.5-pro", 
+                model_name="gemini-2.0-flash", 
                 system_instruction=system_instruction
             )
 
@@ -104,6 +105,6 @@ if user_query:
 
         except Exception as api_error:
             if "429" in str(api_error) or "quota" in str(api_error).lower():
-                st.warning("⚠️ تم تجاوز حد الطلبات المسموح. تأكد من تحديث الـ Key في إعدادات شاشة Streamlit الأونلاين وليس الكود فقط.")
+                st.warning("⚠️ تم تجاوز حد الطلبات. المفتاح النشط حالياً مستهلك، يرجى تحديث الـ Secrets من لوحة تحكم Streamlit أونلاين ومطابقة الحروف الظاهرة فوق.")
             else:
                 st.error(f"عذراً، واجه الموديل مشكلة أثناء توليد الإجابة. التفاصيل: {api_error}")
