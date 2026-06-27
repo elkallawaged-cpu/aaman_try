@@ -201,3 +201,102 @@ with st.expander("📂 اضغط هنا لرفع مستندات الشركة أو
                 st.session_state.vector_store = FAISS.from_documents(splits, embeddings)
                 
                 st.session_state.meta_stats = {
+                    "files": file_count,
+                    "urls": url_count,
+                    "chunks": len(splits)
+                }
+                status.update(label="🎯 تم بناء الذاكرة المتجهة بنجاح وكل شيء جاهز!", state="complete", expanded=False)
+                st.rerun()
+            else:
+                st.warning("برجاء إدخال بيانات صحيحة أولاً.")
+
+# 📊 لوحة العدادات الذكية
+if st.session_state.vector_store is not None:
+    st.write("---")
+    m1, m2, m3 = st.columns(3)
+    with m1:
+        st.markdown(f'<div class="metric-card">📄 <b>المستندات المرفوعة:</b> {st.session_state.meta_stats["files"]} ملفات</div>', unsafe_allow_html=True)
+    with m2:
+        st.markdown(f'<div class="metric-card">🌐 <b>الروابط المفهرسة:</b> {st.session_state.meta_stats["urls"]} روابط</div>', unsafe_allow_html=True)
+    with m3:
+        st.markdown(f'<div class="metric-card">🧩 <b>أجزاء الذاكرة المتجهة:</b> {st.session_state.meta_stats["chunks"]} جُزء</div>', unsafe_allow_html=True)
+
+    # أزرار ذكية عامة وممتازة للتصوير لايف في الفيديو
+    st.write("")
+    st.write("💡 **عمليات تحليل سريعة بنقرة واحدة:**")
+    qp1, qp2, qp3 = st.columns(3)
+    with qp1:
+        if st.button("🔒 سؤال صارم: كم استغرق شحن عميل الإسكندرية وما السبب؟"):
+            st.session_state.quick_input = "كم استغرق الشحن بالضبط لعميل الإسكندرية وائل غنيم وما هو السبب المكتوب في السجلات؟"
+    with qp2:
+        if st.button("💡 سؤال مختلط: حلل المشكلة الهندسية لشاحن 65 واط واقترح حلاً"):
+            st.session_state.quick_input = "بناءً على شكوى العميل طارق البشري بخصوص حرارة الشاحن الـ 65 واط، استخدم علم الهندسة والالكترونيات لتحليل المشكلة وتقديم اقتراحات لتفاديها في التصنيع القادم."
+    with qp3:
+        if st.button("📈 تقرير عام: ما هي الشكوى التقنية المتكررة في تطبيق الساعة الذكية؟"):
+            st.session_state.quick_input = "استخرج الشكوى الخاصة بتطبيق الساعة الذكية Pro، ولماذا تستهلك البطارية بشكل مرعب؟"
+
+# 4. واجهة المحادثة المصقولة
+st.write("---")
+st.write("### 💬 نافذة الاستعلام والتحليل الذكي")
+
+for role, text in st.session_state.chat_history:
+    with st.chat_message(role):
+        st.write(text)
+
+current_query = st.chat_input("اسأل المساعد الذكي عن أي شيء يخص مستندات الشركة...")
+if st.session_state.quick_input:
+    current_query = st.session_state.quick_input
+    st.session_state.quick_input = "" 
+
+if current_query:
+    with st.chat_message("user"):
+        st.write(current_query)
+    st.session_state.chat_history.append(("user", current_query))
+
+    with st.chat_message("assistant"):
+        try:
+            if "التزام صارم" in reasoning_mode:
+                system_instruction = (
+                    "أنت مساعد ذكي ومحترف. يجب عليك الإجابة على أسئلة المستخدم بناءً *فقط* على السياق المرفق. "
+                    "إذا لم تكن الإجابة موجودة حرفياً في السياق، قل بكل وضوح 'المعلومة غير متوفرة في الملفات المرفوعة' ولا تخترع أي شيء."
+                )
+            else:
+                system_instruction = (
+                    "أنت خبير ومحلل ذكاء اصطناعي عبقري. مهمتك هي الدمج والربط بين السياق المرفق (Context) وبين "
+                    "معلوماتك العامة العميقة وقدرتك على الاستنتاج والتحليل البناء. قم بربط الخيوط ببعضها لحل مسألة المستخدم بذكاء."
+                )
+            
+            model = genai.GenerativeModel(model_name=selected_model, system_instruction=system_instruction)
+
+            if st.session_state.vector_store is not None:
+                with st.spinner("🧠 جاري فحص الذاكرة المتجهة والربط الذكي للأفكار..."):
+                    retrieved_docs = st.session_state.vector_store.similarity_search(current_query, k=6)
+                    sources = set([d.metadata.get("source", "مصدر غير معروف") for d in retrieved_docs])
+                    
+                    context = "\n\n".join([doc.page_content for doc in retrieved_docs])
+                    full_prompt = f"السياق المستخرج من مصادرك الشاملة:\n{context}\n\nسؤال المستخدم:\n{current_query}"
+                    
+                    response = model.generate_content(full_prompt)
+                    answer = response.text
+                    
+                    st.write(answer)
+                    
+                    st.write("")
+                    with st.expander("📌 المستندات والمصادر المستند إليها في الإجابة:", expanded=False):
+                        for src in sources:
+                            st.markdown(f"• `{src}`")
+            else:
+                with st.spinner("جاري التفكير المباشر..."):
+                    response = model.generate_content(current_query)
+                    answer = response.text
+                    st.write(answer)
+
+            st.session_state.chat_history.append(("assistant", answer))
+            if current_query:
+                st.rerun() 
+
+        except Exception as api_error:
+            if "429" in str(api_error) or "quota" in str(api_error).lower():
+                st.warning("⚠️ كوتا الموديل مضغوطة حالياً، غير الموديل من القائمة الجانبية وجرب تاني.")
+            else:
+                st.error(f"حدث خطأ أثناء معالجة الرد: {api_error}")
