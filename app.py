@@ -2,8 +2,8 @@ import streamlit as st
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
-from langchain_core.prompts import ChatPromptTemplate
-from langchain_google_genai import GoogleGenerativeAIEmbeddings, ChatGoogleGenerativeAI
+from langchain_google_genai import GoogleGenerativeAIEmbeddings
+import google.generativeai as genai
 import os
 import tempfile
 
@@ -12,9 +12,11 @@ st.set_page_config(page_title="Universal AI Knowledge Assistant", layout="wide")
 st.title("📂 Universal AI Knowledge Assistant (Dynamic RAG)")
 st.subheader("ارفع أي ملف وابدأ الشات معاه فوراً")
 
-# جلب المفتاح في متغير واضح
+# جلب المفتاح من الـ Secrets
 if "GEMINI_API_KEY" in st.secrets:
     SECRET_KEY = st.secrets["GEMINI_API_KEY"]
+    # تكوين مكتبة جوجل الرسمية مباشرة
+    genai.configure(api_key=SECRET_KEY)
 else:
     st.error("رجاءً تأكد من إضافة GEMINI_API_KEY في الـ Secrets الخاص بـ Streamlit.")
     st.stop()
@@ -41,7 +43,6 @@ if uploaded_file is not None and st.session_state.vector_store is None:
             text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
             splits = text_splitter.split_documents(docs)
 
-            # تمرير المفتاح بشكل صريح هنا للموديل
             embeddings = GoogleGenerativeAIEmbeddings(
                 model="gemini-embedding-001", 
                 google_api_key=SECRET_KEY
@@ -71,32 +72,37 @@ if user_query:
     st.session_state.chat_history.append(("user", user_query))
 
     with st.chat_message("assistant"):
-        # تمرير المفتاح بشكل صريح هنا أيضاً للموديل
-        llm = ChatGoogleGenerativeAI(
-            model="gemini-1.5-flash", 
-            temperature=0.3, 
-            google_api_key=SECRET_KEY
-        )
+        try:
+            # استدعاء موديل جيميناي عبر المكتبة الرسمية مباشرة وبثبات تام
+            system_instruction = (
+                "أنت مساعد ذكي ومحترف وظيفتك الإجابة على أسئلة المستخدم بناءً على السياق (Context) المرفق فقط. "
+                "إذا كانت الإجابة غير موجودة في السياق، قل بكل وضوح 'المعلومة غير متوفرة في الملف المرفوع' ولا تقم باختراع إجابات."
+            )
+            
+            model = genai.GenerativeModel(
+                model_name="gemini-1.5-flash",
+                system_instruction=system_instruction
+            )
 
-        if st.session_state.vector_store is not None:
-            with st.spinner("loading..."):
-                docs = st.session_state.vector_store.similarity_search(user_query, k=4)
-                context = "\n\n".join([doc.page_content for doc in docs])
+            if st.session_state.vector_store is not None:
+                with st.spinner("loading..."):
+                    # جلب النصوص المشابهة من FAISS
+                    docs = st.session_state.vector_store.similarity_search(user_query, k=4)
+                    context = "\n\n".join([doc.page_content for doc in docs])
 
-                prompt_template = ChatPromptTemplate.from_messages([
-                    ("system", "أنت مساعد ذكي ومحترف وظيفتك الإجابة على أسئلة المستخدم بناءً على السياق (Context) المرفق فقط. إذا كانت الإجابة غير موجودة في السياق، قل بكل وضوح 'المعلومة غير متوفرة في الملف المرفوع' ولا تقم باختراع إجابات."),
-                    ("human", "السياق المستخرج من الملف:\n{context}\n\nسؤال المستخدم:\n{question}")
-                ])
-                
-                chain = prompt_template | llm
-                response = chain.invoke({"context": context, "question": user_query})
-                
-                answer = response.content
-                st.write(answer)
-                st.session_state.chat_history.append(("assistant", answer))
-        else:
-            with st.spinner("جاري التفكير..."):
-                response = llm.invoke(user_query)
-                answer = response.content
-                st.write(answer)
-                st.session_state.chat_history.append(("assistant", answer))
+                    # دمج السياق والسؤال بشكل مباشر ومستقر
+                    full_prompt = f"السياق المستخرج من الملف:\n{context}\n\nسؤال المستخدم:\n{user_query}"
+                    
+                    response = model.generate_content(full_prompt)
+                    answer = response.text
+            else:
+                with st.spinner("جاري التفكير..."):
+                    response = model.generate_content(user_query)
+                    answer = response.text
+
+            st.write(answer)
+            st.session_state.chat_history.append(("assistant", answer))
+
+        except Exception as api_error:
+            # هنا بنجبر السيرفر يطبع السبب الحقيقي بدون رعب الـ Redacted
+            st.error(f"عذراً، واجه الموديل مشكلة أثناء توليد الإجابة. السبب الحقيقي: {api_error}")
