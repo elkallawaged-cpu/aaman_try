@@ -15,7 +15,6 @@ st.subheader("ارفع أي ملف وابدأ الشات معاه فوراً")
 # جلب المفتاح من الـ Secrets
 if "GEMINI_API_KEY" in st.secrets:
     SECRET_KEY = st.secrets["GEMINI_API_KEY"]
-    # تكوين مكتبة جوجل الرسمية مباشرة
     genai.configure(api_key=SECRET_KEY)
 else:
     st.error("رجاءً تأكد من إضافة GEMINI_API_KEY في الـ Secrets الخاص بـ Streamlit.")
@@ -73,24 +72,22 @@ if user_query:
 
     with st.chat_message("assistant"):
         try:
-            # استدعاء موديل جيميناي عبر المكتبة الرسمية مباشرة وبثبات تام
             system_instruction = (
                 "أنت مساعد ذكي ومحترف وظيفتك الإجابة على أسئلة المستخدم بناءً على السياق (Context) المرفق فقط. "
                 "إذا كانت الإجابة غير موجودة في السياق، قل بكل وضوح 'المعلومة غير متوفرة في الملف المرفوع' ولا تقم باختراع إجابات."
             )
             
+            # تم التحديث إلى الموديل الأحدث والأكثر استقراراً للنظام الحالي
             model = genai.GenerativeModel(
-                model_name="gemini-1.5-flash",
+                model_name="gemini-2.0-flash", 
                 system_instruction=system_instruction
             )
 
             if st.session_state.vector_store is not None:
                 with st.spinner("loading..."):
-                    # جلب النصوص المشابهة من FAISS
                     docs = st.session_state.vector_store.similarity_search(user_query, k=4)
                     context = "\n\n".join([doc.page_content for doc in docs])
 
-                    # دمج السياق والسؤال بشكل مباشر ومستقر
                     full_prompt = f"السياق المستخرج من الملف:\n{context}\n\nسؤال المستخدم:\n{user_query}"
                     
                     response = model.generate_content(full_prompt)
@@ -104,5 +101,4 @@ if user_query:
             st.session_state.chat_history.append(("assistant", answer))
 
         except Exception as api_error:
-            # هنا بنجبر السيرفر يطبع السبب الحقيقي بدون رعب الـ Redacted
             st.error(f"عذراً، واجه الموديل مشكلة أثناء توليد الإجابة. السبب الحقيقي: {api_error}")
