@@ -63,9 +63,9 @@ if process_button and uploaded_files:
         # لتسهيل الـ Embedding بشكل مجاني بالكامل وسريع سنستخدم الـ Custom Embedding الخاص بـ Gemini
         class GeminiEmbeddings:
             def embed_documents(self, texts):
-                return [genai.embed_content(model="models/embedding-001", content=t, task_type="retrieval_document")["embedding"] for t in texts]
+                return [genai.embed_content(model="models/embedding-004", content=t, task_type="retrieval_document")["embedding"] for t in texts]
             def embed_query(self, text):
-                return genai.embed_content(model="models/embedding-001", content=text, task_type="retrieval_query")["embedding"]
+                return genai.embed_content(model="models/embedding-004", content=text, task_type="retrieval_query")["embedding"]
 
         # بناء الـ Vector Store في الـ Memory
         embeddings = GeminiEmbeddings()
