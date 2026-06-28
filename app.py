@@ -6,12 +6,16 @@ Improvements over v1:
   · Organised into clear, testable helper functions
   · Proper session-state bootstrapping and model caching
   · Granular, actionable error messages
+  · Robust Web Scraping fix with Custom User-Agent
 """
 
 import os
 import re
 import html as html_lib
 import tempfile
+
+# منع تحذيرات LangChain وتجهيز هوية مخصصة للمتصفح لمنع حظر الروابط
+os.environ["USER_AGENT"] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
 
 import google.generativeai as genai
 import streamlit as st
@@ -29,7 +33,7 @@ CHUNK_SIZE    = 1_000
 CHUNK_OVERLAP = 200
 TOP_K         = 6
 EMBED_MODEL   = "gemini-embedding-001"
-DEFAULT_MODEL = "gemini-2.0-flash"
+DEFAULT_MODEL = "gemini-3.1-flash-lite"
 MAX_FILE_MB   = 25          # per-file upload limit
 MAX_URLS      = 8           # maximum web URLs per session
 
@@ -336,12 +340,19 @@ def load_urls(raw: str) -> tuple[list[Document], int, list[str]]:
         errors.append(f"الحد الأقصى {MAX_URLS} روابط — تم تجاهل الزائد.")
         lines = lines[:MAX_URLS]
 
+    # 🛠️ التعديل الجوهري: إضافة ترويسة متصفح حقيقي لتجنب حظر الـ HTTP 403
+    request_headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+    }
+
     for url in lines:
         if not is_valid_url(url):
             errors.append(f"رابط غير صالح أو غير آمن: '{safe_html(url)}'")
             continue
         try:
-            for d in WebBaseLoader(url).load():
+            # تمرير الـ headers للـ WebBaseLoader لضمان القراءة الناجحة
+            loader = WebBaseLoader(web_path=url, requests_kwargs={"headers": request_headers})
+            for d in loader.load():
                 d.metadata["source"] = url
                 docs.append(d)
             count += 1
@@ -411,7 +422,7 @@ def generate_smart_queries(docs: list[Document], current_mode: str, model_name: 
             mode_instruction = "الوضع الحالي: [مختلط]. ركز على التحليل الاستنتاجي، الأسباب، والتوصيات والربط الفني بين الأفكار."
 
         prompt = (
-            f"بناءً على المحتوى المرفق، اقترح بالضبط 3 أسئلة أو استعلامات هامة للمستخدم.\n"
+            f"بناءً على المحتوى المرفق, اقترح بالضبط 3 أسئلة أو استعلامات هامة للمستخدم.\n"
             f"💡 توجيه نوعية الأسئلة: {mode_instruction}\n\n"
             f"⚠️ شروط إجبارية للتنسيق:\n"
             f"1. اكتب الأسئلة باللغة العربية.\n"
