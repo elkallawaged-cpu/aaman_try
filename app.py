@@ -32,7 +32,7 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 CHUNK_SIZE    = 1_000
 CHUNK_OVERLAP = 200
 TOP_K         = 6
-EMBED_MODEL   = "gemini-embedding-002"
+EMBED_MODEL   = "gemini-embedding-001"
 DEFAULT_MODEL = "gemini-3.1-flash-lite"
 MAX_FILE_MB   = 25          # per-file upload limit
 MAX_URLS      = 8           # maximum web URLs per session
