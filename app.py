@@ -365,40 +365,44 @@ def build_vector_store(docs: list[Document]) -> tuple[FAISS, int]:
 # ═══════════════════════════════════════════════════════════════════════════════
 #  🤖  MODEL HELPERS
 # ═══════════════════════════════════════════════════════════════════════════════
-@st.cache_data(ttl=600, show_spinner=False)
-def list_models() -> list[str]:
-    """Fetch available Gemini models that support generateContent."""
-    try:
-        return [
-            m.name.split("/")[-1]
-            for m in genai.list_models()
-            if "generateContent" in m.supported_generation_methods
-        ]
-    except Exception:
-        return [DEFAULT_MODEL]
-
-
-def build_system_prompt(strict: bool) -> str:
-    if strict:
-        return (
-            "أنت مساعد مؤسسي دقيق. أجب حصراً بناءً على السياق المُرفق. "
-            "إن لم تجد الإجابة اكتب فقط: 'المعلومة غير متوفرة في الوثائق المرفوعة.'"
-        )
-    return (
-        "أنت خبير تحليلي. ادمج السياق المُرفق مع معرفتك لتقديم تحليل عميق ومفيد. "
-        "استنتج الأنماط وقدّم توصيات عملية."
-    )
-
-
-def classify_error(exc: Exception) -> str:
-    msg = str(exc)
-    if "429" in msg or "quota" in msg.lower():
-        return "⚠️ تم استنفاد حصة النموذج الحالي. غيّره من الشريط الجانبي وأعد المحاولة."
-    if "api_key" in msg.lower() or "auth" in msg.lower():
-        return "🔑 خطأ في مفتاح الـ API — تحقق من Streamlit Secrets."
-    return f"❌ خطأ غير متوقع: {msg[:220]}"
-
-
+if st.button("🔥 بناء وتحديث قاعدة المعرفة الآن", type="primary"):
+        if uploaded_files:
+            with st.status("🚀 جاري استخراج النصوص وتقسيم البيانات...") as status:
+                all_docs = load_uploaded_files(uploaded_files)
+                if all_docs:
+                    status.update(label="🧬 جاري توليد الـ Embeddings وبناء كشاف FAISS...")
+                    text_splitter = RecursiveCharacterTextSplitter(chunk_size=CHUNK_SIZE, chunk_overlap=CHUNK_OVERLAP)
+                    split_chunks = text_splitter.split_documents(all_docs)
+                    
+                    # 🛡️ سطر الحماية: فلترة أي قطع فارغة تماماً لتجنب أخطاء السيرفر
+                    split_chunks = [c for c in split_chunks if c.page_content.strip()]
+                    
+                    if not split_chunks:
+                        status.update(label="❌ فشل البناء - ملفات فارغة", state="error")
+                        st.error("❌ الملفات المرفوعة لا تحتوي على نصوص صالحة للقراءة أو فارغة!")
+                        st.stop()
+                    
+                    # 🚀 استخدام موديل text-embedding-004 الحديث والمستقر مباشرة لضمان عدم حدوث الـ Exception
+                    embeddings = GoogleGenerativeAIEmbeddings(model="models/text-embedding-004", google_api_key=_API_KEY)
+                    vector_store = FAISS.from_documents(split_chunks, embeddings)
+                    
+                    # حفظ البيانات في الـ Session State
+                    st.session_state.vector_store = vector_store
+                    st.session_state.meta_stats = {
+                        "files": len(uploaded_files),
+                        "chunks": len(split_chunks)
+                    }
+                    
+                    status.update(label="🧠 جاري تحليل المحتوى لتوليد أسئلة ذكية...")
+                    st.session_state.suggested_queries = generate_smart_queries(all_docs)
+                    
+                    status.update(label="✅ تم بناء قاعدة المعرفة واقتراح الأسئلة بنجاح!", state="complete")
+                    st.rerun()
+                else:
+                    status.update(label="❌ فشل استخراج النصوص", state="error")
+                    st.error("فشل استخراج أي نصوص صالحة من الملفات المرفوعة.")
+        else:
+            st.warning("الرجاء رفع ملف واحد على الأقل أولاً.")
 # ═══════════════════════════════════════════════════════════════════════════════
 #  🖼️  HERO HEADER
 # ═══════════════════════════════════════════════════════════════════════════════
