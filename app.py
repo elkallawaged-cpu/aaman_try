@@ -1,8 +1,8 @@
 """
 RAG Enterprise Assistant — Streamlit App
-Improvements over v3:
-  · Fixed 429 RESOURCE_EXHAUSTED by introducing manual chunk batching and exponential backoff retries during Embedding generation.
-  · Optimized for Gemini Free Tier rate-limits (RPM/TPM).
+Improvements over v4:
+  · Fixed Infinite Rerun Loop bug in smart query generation by switching initialization state to None.
+  · Prevented app freezing/hanging during file/URL building phase.
 """
 
 import os
@@ -28,12 +28,12 @@ CHUNK_OVERLAP = 200
 TOP_K         = 6
 EMBED_MODEL   = "gemini-embedding-001"
 DEFAULT_MODEL = "gemini-2.0-flash"
-MAX_FILE_MB   = 25          # per-file upload limit
-MAX_URLS      = 8           # maximum web URLs per session
+MAX_FILE_MB   = 25          
+MAX_URLS      = 8           
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-#  📐  PAGE CONFIG  (must be first Streamlit call)
+#  📐  PAGE CONFIG
 # ═══════════════════════════════════════════════════════════════════════════════
 st.set_page_config(
     page_title="RAG — المساعد المؤسسي الذكي",
@@ -212,22 +212,19 @@ _URL_RE = re.compile(r"^https?://[a-zA-Z0-9\-._~:/?#\[\]@!$&'()*+,;=%]+$")
 
 
 def is_valid_url(url: str) -> bool:
-    """Return True only for well-formed http/https URLs."""
     return bool(_URL_RE.match(url.strip()))
 
 
 def safe_html(text: str) -> str:
-    """Escape special HTML characters to prevent XSS."""
     return html_lib.escape(str(text))
 
 
 def within_size_limit(uploaded_file) -> bool:
-    """Check that an UploadedFile does not exceed MAX_FILE_MB."""
     return len(uploaded_file.getvalue()) / (1024 * 1024) <= MAX_FILE_MB
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-#  🔑  API KEY  — load once, fail fast
+#  🔑  API KEY
 # ═══════════════════════════════════════════════════════════════════════════════
 def _init_api() -> str:
     key = (st.secrets.get("GEMINI_API_KEY") or "").strip()
@@ -254,16 +251,16 @@ if not _API_KEY:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-#  🗄️  SESSION STATE  — single source of truth
+#  🗄️  SESSION STATE  — Fixed initialization to prevent loops
 # ═══════════════════════════════════════════════════════════════════════════════
 _DEFAULTS: dict = {
-    "chat_history": [],                              # list[tuple[role, text]]
-    "vector_store": None,                            # FAISS | None
-    "all_docs": [],                                  # Documents storage for dynamic generation
-    "suggested_queries": [],                         # Smart generated queries list
-    "query_gen_error": None,                         # Error tracking for smart query generation
+    "chat_history": [],                              
+    "vector_store": None,                            
+    "all_docs": [],                                  
+    "suggested_queries": None,                       # Changed from [] to None to fix the infinite rerun bug
+    "query_gen_error": None,                         
     "meta_stats":   {"files": 0, "urls": 0, "chunks": 0},
-    "quick_input":  "",                              # pre-filled chat query via dynamic button
+    "quick_input":  "",                              
 }
 for _k, _v in _DEFAULTS.items():
     if _k not in st.session_state:
@@ -271,10 +268,9 @@ for _k, _v in _DEFAULTS.items():
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-#  📦  DOCUMENT LOADING (FILES & URLS)
+#  📦  DOCUMENT LOADING
 # ═══════════════════════════════════════════════════════════════════════════════
 def load_files(files) -> tuple[list[Document], int, list[str]]:
-    """Parse uploaded files into LangChain Documents safely."""
     docs, count, errors = [], 0, []
 
     for f in files:
@@ -322,10 +318,6 @@ def load_files(files) -> tuple[list[Document], int, list[str]]:
 
 
 def load_urls(raw: str) -> tuple[list[Document], int, list[str]]:
-    """
-    Scrape web pages from a newline-separated URL list.
-    Added anti-hang protections (Strict Timeout & Custom User-Agent).
-    """
     docs, count, errors = [], 0, []
     lines = [u.strip() for u in raw.splitlines() if u.strip()]
 
@@ -352,19 +344,15 @@ def load_urls(raw: str) -> tuple[list[Document], int, list[str]]:
                 docs.append(d)
             count += 1
         except Exception as exc:
-            errors.append(f"فشل جلب الرابط '{safe_html(url)}' (قد يكون محجوباً أو بطيئاً): {str(exc)[:100]}")
+            errors.append(f"فشل جلب الرابط '{safe_html(url)}': {str(exc)[:100]}")
 
     return docs, count, errors
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-#  🧩  VECTOR STORE (BATCHED WITH RETRY TO FIX 429 RESOURCE_EXHAUSTED)
+#  🧩  VECTOR STORE (BATCHED WITH SAFE RETRY)
 # ═══════════════════════════════════════════════════════════════════════════════
 def build_vector_store(docs: list[Document]) -> tuple[FAISS, int]:
-    """
-    Chunk documents and embed them using manual batching and exponential backoff
-    to strictly prevent hitting Gemini Free Tier 429 Quota limits.
-    """
     splitter = RecursiveCharacterTextSplitter(
         chunk_size=CHUNK_SIZE,
         chunk_overlap=CHUNK_OVERLAP,
@@ -375,32 +363,29 @@ def build_vector_store(docs: list[Document]) -> tuple[FAISS, int]:
 
     emb = GoogleGenerativeAIEmbeddings(model=EMBED_MODEL, google_api_key=_API_KEY)
     
-    # 🎯 تقسيم الشغل لمجموعات صغيرة (5 قطع لكل دفعة) لمنع سحابة جوجل من حظر التوكينز
     batch_size = 5
     first_batch = chunks[:batch_size]
     
     db = None
-    # محاولة رفع الدفعة الأولى مع تكرار ذكي لو حصل خطأ 429
     for attempt in range(5):
         try:
             db = FAISS.from_documents(first_batch, emb)
             break
         except Exception as e:
             if "429" in str(e) or "quota" in str(e).lower():
-                time.sleep(2 ** attempt + 1) # الانتظار لثواني متضاعفة تلقائياً
+                time.sleep(2 ** attempt + 1)
             else:
                 raise e
 
     if not db:
         raise RuntimeError("فشل الاتصال بـ API الـ Embeddings بسبب ضغط السيرفر وحصتك الحالية. يرجى إعادة المحاولة.")
 
-    # معالجة ورفع باقي المجموعات تدريجياً
     for i in range(batch_size, len(chunks), batch_size):
         batch = chunks[i:i+batch_size]
         for attempt in range(5):
             try:
                 db.add_documents(batch)
-                time.sleep(1.2)  # فترة راحة قصيرة جداً لتهدئة السيرفر بين الرفع والآخر
+                time.sleep(1.2)  
                 break
             except Exception as e:
                 if "429" in str(e) or "quota" in str(e).lower():
@@ -416,7 +401,6 @@ def build_vector_store(docs: list[Document]) -> tuple[FAISS, int]:
 # ═══════════════════════════════════════════════════════════════════════════════
 @st.cache_data(ttl=600, show_spinner=False)
 def list_models() -> list[str]:
-    """Fetch available Gemini models that support generateContent."""
     try:
         return [
             m.name.split("/")[-1]
@@ -440,7 +424,6 @@ def build_system_prompt(strict: bool) -> str:
 
 
 def generate_smart_queries(docs: list[Document], current_mode: str, model_name: str) -> list[str]:
-    """Generate 3 ultra-short smart queries dynamically based on text content and chosen model."""
     try:
         if not docs:
             return []
@@ -472,7 +455,7 @@ def generate_smart_queries(docs: list[Document], current_mode: str, model_name: 
     except Exception as e:
         st.session_state["query_gen_error"] = str(e)
         if current_mode == "strict":
-            return ["ما هي الحقائق الصريحة في الملف؟", "استخرج أهم الأرقام والتواريخ المحددة.", "ما هي الشروط والأحكام المذكورة?"]
+            return ["ما هي الحقائق الصريحة في الملف؟", "استخرج أهم الأرقام والتواريخ المحددة.", "ما هي الشروط والأحكام المذكورة؟"]
         else:
             return ["ما هو التحليل العام للمستند؟", "ما هي أبرز المقترحات والتوصيات؟", "ملخص شامل لأهم نقاط الملف."]
 
@@ -491,7 +474,7 @@ def classify_error(exc: Exception) -> str:
 # ═══════════════════════════════════════════════════════════════════════════════
 st.markdown("""
 <div class="hero">
-    <div class="hero-badge">✦ Enterprise AI Assistant v4 ✦</div>
+    <div class="hero-badge">✦ Enterprise AI Assistant v5 ✦</div>
     <div class="hero-title">🧠 المساعد المؤسسي الذكي</div>
     <div class="hero-sub">
         Retrieval-Augmented Generation &nbsp;·&nbsp;
@@ -646,7 +629,7 @@ with st.expander(
                         vs_new, n_chunks = build_vector_store(all_docs)
                         st.session_state.vector_store = vs_new
                         st.session_state.all_docs = all_docs 
-                        st.session_state.suggested_queries = [] 
+                        st.session_state.suggested_queries = None # Reset safely to trigger creation once
                         st.session_state.query_gen_error = None 
                         st.session_state.meta_stats = {
                             "files": f_count,
@@ -700,12 +683,14 @@ if st.session_state.vector_store:
 
     if st.session_state.last_mode != mode:
         st.session_state.last_mode = mode
-        st.session_state.suggested_queries = []
+        st.session_state.suggested_queries = None
 
     mode_title = "الصارم" if mode == "strict" else "المختلط"
     st.markdown(f"**💡 استعلامات مقترحة ذكياً لمستنداتك بالنمط ({mode_title}):**")
     
-    if not st.session_state.get("suggested_queries"):
+    # Safe trigger for smart queries generation — no more loops!
+    if st.session_state.suggested_queries is None:
+        st.session_state.suggested_queries = [] # block loop immediately
         with st.spinner("⏳ جاري تحليل بياناتك وتوليد الأسئلة المخصصة اللحظية..."):
             docs_to_analyze = st.session_state.get("all_docs", [])
             st.session_state.suggested_queries = generate_smart_queries(docs_to_analyze, mode, selected_model)
@@ -714,13 +699,14 @@ if st.session_state.vector_store:
     if st.session_state.get("query_gen_error"):
         st.caption(f"⚠️ *ملاحظة للشفافية: تم تفعيل الأسئلة الاحتياطية بسبب خطأ الـ API التالي:* `{st.session_state.query_gen_error}`")
 
-    queries = st.session_state.suggested_queries
-    cols = st.columns(len(queries))
-    for col, query in zip(cols, queries):
-        with col:
-            if st.button(query, key=f"dynamic_btn_{hash(query)}", use_container_width=True):
-                st.session_state.quick_input = query
-                st.rerun()
+    queries = st.session_state.suggested_queries or []
+    if queries:
+        cols = st.columns(len(queries))
+        for col, query in zip(cols, queries):
+            with col:
+                if st.button(query, key=f"dynamic_btn_{hash(query)}", use_container_width=True):
+                    st.session_state.quick_input = query
+                    st.rerun()
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -729,7 +715,6 @@ if st.session_state.vector_store:
 st.markdown('<hr class="sep">', unsafe_allow_html=True)
 st.markdown("### 💬 الاستعلام والتحليل الذكي")
 
-# Render history
 if st.session_state.chat_history:
     for role, text in st.session_state.chat_history:
         with st.chat_message(role):
@@ -754,7 +739,6 @@ else:
             unsafe_allow_html=True,
         )
 
-# Get current input
 typed_q = st.chat_input("اسأل المساعد عن أي تفاصيل داخل وثائقك المرفوعة...")
 current_q: str | None = typed_q
 
@@ -762,7 +746,6 @@ if st.session_state.quick_input:
     current_q = st.session_state.quick_input
     st.session_state.quick_input = ""
 
-# Process the query
 if current_q:
     query = safe_html(current_q)
 
