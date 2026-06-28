@@ -18,7 +18,7 @@ CHUNK_SIZE    = 1000
 CHUNK_OVERLAP = 200
 TOP_K         = 5
 EMBED_MODEL   = "models/embedding-001"
-DEFAULT_MODEL = "gemini-1.5-flash"
+DEFAULT_MODEL = "gemini-3.1-flash-lite"
 
 st.set_page_config(page_title="RAG — المساعد المؤسسي الذكي", page_icon="🧠", layout="wide")
 
