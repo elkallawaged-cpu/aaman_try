@@ -261,6 +261,8 @@ if not _API_KEY:
 _DEFAULTS: dict = {
     "chat_history": [],                              # list[tuple[role, text]]
     "vector_store": None,                            # FAISS | None
+    "all_docs": [],                                  # لتخزين المستندات من أجل التوليد الديناميكي
+    "suggested_queries": [],                         # قائمة الاستعلامات المقترحة ذكياً
     "meta_stats":   {"files": 0, "urls": 0, "chunks": 0},
     "quick_input":  "",                              # pre-filled chat query
 }
@@ -390,6 +392,42 @@ def build_system_prompt(strict: bool) -> str:
     )
 
 
+def generate_smart_queries(docs: list[Document], current_mode: str) -> list[str]:
+    """توليد 3 أسئلة مخصصة وقصيرة جداً بناءً على محتوى الملف والوضع المختار"""
+    try:
+        if not docs:
+            return []
+        
+        # قراءة مقتطف صغير لسرعة الاستجابة
+        sample_text = "\n".join([d.page_content[:600] for d in docs[:3]])
+        model = genai.GenerativeModel(DEFAULT_MODEL)
+        
+        if current_mode == "strict":
+            mode_instruction = "الوضع الحالي: [صارم]. ركز تماماً على استخراج الحقائق المباشرة، الأرقام الصريحة، والتواريخ المذكورة نصاً بدون استنتاج."
+        else:
+            mode_instruction = "الوضع الحالي: [مختلط]. ركز على التحليل الاستنتاجي، الأسباب، والتوصيات والربط الفني بين الأفكار."
+
+        prompt = (
+            f"بناءً على المحتوى المرفق، اقترح بالضبط 3 أسئلة أو استعلامات هامة للمستخدم.\n"
+            f"💡 توجيه نوعية الأسئلة: {mode_instruction}\n\n"
+            f"⚠️ شروط إجبارية للتنسيق:\n"
+            f"1. اكتب الأسئلة باللغة العربية.\n"
+            f"2. اجعل الأسئلة قصيرة جداً وموجزة ومحددة (من 3 إلى 6 كلمات فقط لكل سؤال).\n"
+            f"3. أعطني الـ 3 أسئلة مباشرة في 3 أسطر منفصلة، بدون أي أرقام (لا تكتب 1، 2، 3) وبدون أي مقدمات أو خاتمة.\n\n"
+            f"المحتوى:\n{sample_text}"
+        )
+        response = model.generate_content(prompt)
+        lines = [line.strip() for line in response.text.split("\n") if line.strip()]
+        cleaned_queries = [re.sub(r'^\d+[\.\-\)]\s*', '', q).strip() for q in lines]
+        return [q for q in cleaned_queries if q][:3]
+    except Exception:
+        # خطة بديلة سريعة في حال حدوث أي انقطاع
+        if current_mode == "strict":
+            return ["ما هي الأرقام والتواريخ الصريحة؟", "استخرج الشروط المطلوبة.", "ما هي المسؤوليات المحددة؟"]
+        else:
+            return ["ما هي أسباب المشكلة؟", "حلل المقترحات والتوصيات.", "ملخص لأهم نقاط الملف."]
+
+
 def classify_error(exc: Exception) -> str:
     msg = str(exc)
     if "429" in msg or "quota" in msg.lower():
@@ -429,7 +467,7 @@ st.markdown("""
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-#  🗂️  SIDEBAR
+#  🗄️  SIDEBAR
 # ═══════════════════════════════════════════════════════════════════════════════
 with st.sidebar:
     st.markdown("### ⚙️ إعدادات النظام")
@@ -478,7 +516,7 @@ with st.sidebar:
             f"{'المستخدم' if r == 'user' else 'المساعد'}: {t}"
             for r, t in st.session_state.chat_history
         )
-        st.download_button(
+        st.sidebar.download_button(
             "📥 تحميل سجل المحادثة",
             data=log.encode("utf-8"),
             file_name="rag_chat.txt",
@@ -563,6 +601,8 @@ with st.expander(
                     try:
                         vs_new, n_chunks = build_vector_store(all_docs)
                         st.session_state.vector_store = vs_new
+                        st.session_state.all_docs = all_docs # 📥 حفظ المستندات للتوليد الديناميكي
+                        st.session_state.suggested_queries = [] # تصفير الأسئلة القديمة لإجبار النظام على التوليد
                         st.session_state.meta_stats = {
                             "files": f_count,
                             "urls":  u_count,
@@ -586,7 +626,7 @@ with st.expander(
                 st.rerun()
 
 
-# 📊 METRICS + QUICK ACTIONS (only when VS is ready)
+# 📊 METRICS + QUICK ACTIONS (التحميل الديناميكي المخصص التلقائي مع الـ Loading)
 # ═══════════════════════════════════════════════════════════════════════════════
 if st.session_state.vector_store:
     s = st.session_state.meta_stats
@@ -610,20 +650,34 @@ if st.session_state.vector_store:
         unsafe_allow_html=True,
     )
 
-    # 💡 عرض الأسئلة المقترحة ديناميكياً بدلاً من المصفوفة الثابتة القديمة
-    if st.session_state.get("suggested_queries"):
-        st.markdown("**💡 استعلامات سريعة مقترحة ذكياً بناءً على ملفاتك:**")
-        
-        queries = st.session_state.suggested_queries
-        cols = st.columns(len(queries))
-        
-        for col, query in zip(cols, queries):
-            with col:
-                # تقصير النص المعروض على الزر لو طويل عشان التنسيق ميبوظش
-                display_label = query[:45] + "..." if len(query) > 45 else query
-                if st.button(display_label, key=f"dynamic_btn_{hash(query)}", use_container_width=True):
-                    st.session_state.quick_input = query
-                    st.rerun()
+    # تهيئة ومراقبة تغيير الوضع (Strict أو Hybrid)
+    if "last_mode" not in st.session_state:
+        st.session_state.last_mode = mode
+
+    # إذا تغير النمط، نصفر القائمة لتشغيل الـ Loading من جديد فوراً
+    if st.session_state.last_mode != mode:
+        st.session_state.last_mode = mode
+        st.session_state.suggested_queries = []
+
+    mode_title = "الصارم" if mode == "strict" else "المختلط"
+    st.markdown(f"**💡 استعلامات مقترحة مخصصة لملفك ({mode_title}):**")
+    
+    # ⏳ مرحلة الـ Loading والـ Spinner التلقائي في حال كانت القائمة فارغة
+    if not st.session_state.get("suggested_queries"):
+        with st.spinner("⏳ جاري تحليل مستنداتك وتوليد أسئلة ذكية تناسب الوضع المختار..."):
+            docs_to_analyze = st.session_state.get("all_docs", [])
+            st.session_state.suggested_queries = generate_smart_queries(docs_to_analyze, mode)
+        st.rerun()
+
+    # 🎯 عرض الـ 3 أزرار الصغيرة والقصيرة جداً بجانب بعضها
+    queries = st.session_state.suggested_queries
+    cols = st.columns(len(queries))
+    for col, query in zip(cols, queries):
+        with col:
+            if st.button(query, key=f"dynamic_btn_{hash(query)}", use_container_width=True):
+                st.session_state.quick_input = query
+                st.rerun()
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 #  💬  CHAT INTERFACE
