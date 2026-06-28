@@ -778,4 +778,4 @@ if current_q:
             st.error(err_msg)
             st.session_state.chat_history.append(("assistant", err_msg))
 
-    st.rerun() 
+    st.rerun()
