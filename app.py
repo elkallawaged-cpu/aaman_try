@@ -7,6 +7,8 @@ Improvements over v1:
   · Proper session-state bootstrapping and model caching
   · Granular, actionable error messages
   · Robust Web Scraping fix with Custom User-Agent
+  · FIX: Dynamic file syncing to reset vector store on file removal/change
+  · FIX: Upgraded embedding model and added defensive checks against empty chunks
 """
 
 import os
@@ -32,8 +34,8 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 CHUNK_SIZE    = 1_000
 CHUNK_OVERLAP = 200
 TOP_K         = 6
-EMBED_MODEL   = "gemini-embedding-001"
-DEFAULT_MODEL = "gemini-3.1-flash-lite"
+EMBED_MODEL   = "text-embedding-004"  # 🔥 تحديث الموديل للإصدار الأحدث والأكثر استقراراً وتفادي الـ Quota
+DEFAULT_MODEL = "gemini-2.0-flash"
 MAX_FILE_MB   = 25          # per-file upload limit
 MAX_URLS      = 8           # maximum web URLs per session
 
@@ -265,6 +267,7 @@ if not _API_KEY:
 _DEFAULTS: dict = {
     "chat_history": [],                              # list[tuple[role, text]]
     "vector_store": None,                            # FAISS | None
+    "indexed_file_names": [],                        # 🔥 مصفوفة لتتبع بصمة الأسماء المفهرسة حالياً لمنع التجمّد والخلط
     "all_docs": [],                                  # لتخزين المستندات من أجل التوليد الديناميكي
     "suggested_queries": [],                         # قائمة الاستعلامات المقترحة ذكياً
     "query_gen_error": None,                         # لتتبع وحفظ أي خطأ في توليد الأسئلة المقترحة
@@ -340,7 +343,7 @@ def load_urls(raw: str) -> tuple[list[Document], int, list[str]]:
         errors.append(f"الحد الأقصى {MAX_URLS} روابط — تم تجاهل الزائد.")
         lines = lines[:MAX_URLS]
 
-    # 🛠️ التعديل الجوهري: إضافة ترويسة متصفح حقيقي لتجنب حظر الـ HTTP 403
+    # التعديل الجوهري: إضافة ترويسة متصفح حقيقي لتجنب حظر الـ HTTP 403
     request_headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
     }
@@ -367,11 +370,20 @@ def load_urls(raw: str) -> tuple[list[Document], int, list[str]]:
 # ═══════════════════════════════════════════════════════════════════════════════
 def build_vector_store(docs: list[Document]) -> tuple[FAISS, int]:
     """Chunk documents, embed them, and return a FAISS index."""
+    # 🔥 تصفية النصوص الفارغة والمسافات الزائدة قبل التقطيع منعاً لانهيار دالة الـ Embeddings
+    valid_docs = [d for d in docs if d.page_content and d.page_content.strip()]
+    if not valid_docs:
+        raise ValueError("جميع المستندات الممررة فارغة أو لم يتم استخراج أي نصوص منها بنجاح.")
+
     splitter = RecursiveCharacterTextSplitter(
         chunk_size=CHUNK_SIZE,
         chunk_overlap=CHUNK_OVERLAP,
     )
-    chunks = splitter.split_documents(docs)
+    chunks = splitter.split_documents(valid_docs)
+    
+    if not chunks:
+        raise ValueError("لم يتم توليد أي أجزاء نصية (Chunks) صالحة من المستندات المرفوعة.")
+
     emb = GoogleGenerativeAIEmbeddings(model=EMBED_MODEL, google_api_key=_API_KEY)
     return FAISS.from_documents(chunks, emb), len(chunks)
 
@@ -413,7 +425,7 @@ def generate_smart_queries(docs: list[Document], current_mode: str, model_name: 
         st.session_state["query_gen_error"] = None # تصفير الخطأ طالما المحاولة بدأت
         sample_text = "\n".join([d.page_content[:600] for d in docs[:3]])
         
-        # 🎯 استخدام النموذج المختار ديناميكياً لتجنب مشاكل الـ Quota أو الإصدارات
+        # استخدام النموذج المختار ديناميكياً لتجنب مشاكل الـ Quota أو الإصدارات
         model = genai.GenerativeModel(model_name)
         
         if current_mode == "strict":
@@ -439,7 +451,7 @@ def generate_smart_queries(docs: list[Document], current_mode: str, model_name: 
         # حفظ الخطأ لإظهاره بشفافية للمستخدم بدل الاختفاء
         st.session_state["query_gen_error"] = str(e)
         if current_mode == "strict":
-            return ["ما هي الحقائق الصريحة في الملف؟", "استخرج أهم الأرقام والتواريخ المحددة.", "ما هي الشروط والأحكام المذكورة؟"]
+            return ["ما هي الحقائق الصريحة في الملف؟", "استخرج أهم الأرقام والتواريخ المحددة.", "ما هي الشروط والأحكام المذكورة?"]
         else:
             return ["ما هو التحليل العام للمستند؟", "ما هي أبرز المقترحات والتوصيات؟", "ملخص شامل لأهم نقاط الملف."]
 
@@ -514,7 +526,7 @@ with st.sidebar:
         )
         s = st.session_state.meta_stats
         st.markdown(
-            f"<div style='margin-top:12px;font-size:.84rem;color:#6B7280;direction:rtl;'>"
+            f"<div style='margin-top:12px;font-size:.84rem;color:#6B7280;direction:rtl;'> "
             f"📄 <b>{s['files']}</b> ملفات &nbsp;·&nbsp; "
             f"🌐 <b>{s['urls']}</b> روابط &nbsp;·&nbsp; "
             f"🧩 <b>{s['chunks']}</b> جزء"
@@ -573,6 +585,18 @@ with st.expander(
             accept_multiple_files=True,
             label_visibility="collapsed",
         )
+        
+        # 🔥 تصفير ومزامنة الذاكرة فوراً إذا قام المستخدم بحذف ملف أو استبداله بملف آخر
+        current_upload_names = [f.name for f in uploaded] if uploaded else []
+        if st.session_state.vector_store and current_upload_names != st.session_state.indexed_file_names:
+            st.session_state.vector_store = None
+            st.session_state.indexed_file_names = []
+            st.session_state.all_docs = []
+            st.session_state.suggested_queries = []
+            st.session_state.query_gen_error = None
+            st.session_state.meta_stats = {"files": 0, "urls": 0, "chunks": 0}
+            st.rerun()
+
         if uploaded:
             st.caption(f"✅ {len(uploaded)} ملف مُختار")
 
@@ -618,6 +642,7 @@ with st.expander(
                         vs_new, n_chunks = build_vector_store(all_docs)
                         st.session_state.vector_store = vs_new
                         st.session_state.all_docs = all_docs 
+                        st.session_state.indexed_file_names = [f.name for f in uploaded] if uploaded else [] # 🔥 تخزين البصمة الحالية للأسماء بنجاح
                         st.session_state.suggested_queries = [] # تفريغ القائمة القديمة لإجبار السيستم على التوليد الجديد
                         st.session_state.query_gen_error = None # تصفير أخطاء التوليد القديمة
                         st.session_state.meta_stats = {
@@ -632,7 +657,7 @@ with st.expander(
                         )
                     except Exception as be:
                         prog.update(label="❌ فشل في بناء الـ Embeddings", state="error")
-                        st.error(f"تفاصيل: {str(be)[:200]}")
+                        st.error(f"تفاصيل كاملة: {str(be)}") # طباعة تفصيلية لتسهيل كشف الأخطاء
                 else:
                     prog.update(label="⚠️ لا توجد بيانات صالحة للمعالجة", state="error")
 
@@ -643,7 +668,8 @@ with st.expander(
                 st.rerun()
 
 
-# 📊 METRICS + QUICK ACTIONS (التوليد الديناميكي الفعلي)
+# ═══════════════════════════════════════════════════════════════════════════════
+# 📊 METRICS + QUICK ACTIONS
 # ═══════════════════════════════════════════════════════════════════════════════
 if st.session_state.vector_store:
     s = st.session_state.meta_stats
@@ -683,7 +709,6 @@ if st.session_state.vector_store:
     if not st.session_state.get("suggested_queries"):
         with st.spinner("⏳ جاري تحليل مستنداتك وتوليد أسئلة ذكية تناسب الوضع المختار..."):
             docs_to_analyze = st.session_state.get("all_docs", [])
-            # تم تمرير selected_model لحل مشكلة الجمود البرمجي الثابت
             st.session_state.suggested_queries = generate_smart_queries(docs_to_analyze, mode, selected_model)
         st.rerun()
 
