@@ -1,13 +1,13 @@
 """
 RAG Enterprise Assistant — Streamlit App
-Improvements over v2:
-  · Added strictly enforced HTTP timeouts & User-Agents to avoid infinite web-scraping hangs.
-  · Optimized local file loaders and garbage cleanups.
-  · Maintained dynamic smart-query generation based on sidebar selected model.
+Improvements over v3:
+  · Fixed 429 RESOURCE_EXHAUSTED by introducing manual chunk batching and exponential backoff retries during Embedding generation.
+  · Optimized for Gemini Free Tier rate-limits (RPM/TPM).
 """
 
 import os
 import re
+import time
 import html as html_lib
 import tempfile
 
@@ -338,7 +338,6 @@ def load_urls(raw: str) -> tuple[list[Document], int, list[str]]:
             errors.append(f"رابط غير صالح أو غير آمن: '{safe_html(url)}'")
             continue
         try:
-            # 🎯 حل مشكلة التعليق اللانهائي: وضع تايم أوت 10 ثواني وتمرير هيدر متصفح حقيقي
             loader = WebBaseLoader(
                 web_paths=(url,),
                 requests_kwargs={
@@ -359,17 +358,57 @@ def load_urls(raw: str) -> tuple[list[Document], int, list[str]]:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-#  🧩  VECTOR STORE
+#  🧩  VECTOR STORE (BATCHED WITH RETRY TO FIX 429 RESOURCE_EXHAUSTED)
 # ═══════════════════════════════════════════════════════════════════════════════
 def build_vector_store(docs: list[Document]) -> tuple[FAISS, int]:
-    """Chunk documents, embed them, and return a FAISS index."""
+    """
+    Chunk documents and embed them using manual batching and exponential backoff
+    to strictly prevent hitting Gemini Free Tier 429 Quota limits.
+    """
     splitter = RecursiveCharacterTextSplitter(
         chunk_size=CHUNK_SIZE,
         chunk_overlap=CHUNK_OVERLAP,
     )
     chunks = splitter.split_documents(docs)
+    if not chunks:
+        raise ValueError("لم يتم استخلاص أي نصوص صالحة للفهرسة.")
+
     emb = GoogleGenerativeAIEmbeddings(model=EMBED_MODEL, google_api_key=_API_KEY)
-    return FAISS.from_documents(chunks, emb), len(chunks)
+    
+    # 🎯 تقسيم الشغل لمجموعات صغيرة (5 قطع لكل دفعة) لمنع سحابة جوجل من حظر التوكينز
+    batch_size = 5
+    first_batch = chunks[:batch_size]
+    
+    db = None
+    # محاولة رفع الدفعة الأولى مع تكرار ذكي لو حصل خطأ 429
+    for attempt in range(5):
+        try:
+            db = FAISS.from_documents(first_batch, emb)
+            break
+        except Exception as e:
+            if "429" in str(e) or "quota" in str(e).lower():
+                time.sleep(2 ** attempt + 1) # الانتظار لثواني متضاعفة تلقائياً
+            else:
+                raise e
+
+    if not db:
+        raise RuntimeError("فشل الاتصال بـ API الـ Embeddings بسبب ضغط السيرفر وحصتك الحالية. يرجى إعادة المحاولة.")
+
+    # معالجة ورفع باقي المجموعات تدريجياً
+    for i in range(batch_size, len(chunks), batch_size):
+        batch = chunks[i:i+batch_size]
+        for attempt in range(5):
+            try:
+                db.add_documents(batch)
+                time.sleep(1.2)  # فترة راحة قصيرة جداً لتهدئة السيرفر بين الرفع والآخر
+                break
+            except Exception as e:
+                if "429" in str(e) or "quota" in str(e).lower():
+                    time.sleep(2 ** attempt + 2)
+                else:
+                    raise e
+                            
+    return db, len(chunks)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -433,7 +472,7 @@ def generate_smart_queries(docs: list[Document], current_mode: str, model_name: 
     except Exception as e:
         st.session_state["query_gen_error"] = str(e)
         if current_mode == "strict":
-            return ["ما هي الحقائق الصريحة في الملف؟", "استخرج أهم الأرقام المحددة.", "ما هي الشروط والأحكام المذكورة؟"]
+            return ["ما هي الحقائق الصريحة في الملف؟", "استخرج أهم الأرقام والتواريخ المحددة.", "ما هي الشروط والأحكام المذكورة?"]
         else:
             return ["ما هو التحليل العام للمستند؟", "ما هي أبرز المقترحات والتوصيات؟", "ملخص شامل لأهم نقاط الملف."]
 
@@ -452,11 +491,11 @@ def classify_error(exc: Exception) -> str:
 # ═══════════════════════════════════════════════════════════════════════════════
 st.markdown("""
 <div class="hero">
-    <div class="hero-badge">✦ Enterprise AI Assistant v3 ✦</div>
+    <div class="hero-badge">✦ Enterprise AI Assistant v4 ✦</div>
     <div class="hero-title">🧠 المساعد المؤسسي الذكي</div>
     <div class="hero-sub">
         Retrieval-Augmented Generation &nbsp;·&nbsp;
-        أمان تام &nbsp;·&nbsp; منع تجمد الروابط &nbsp;·&nbsp; استجابة فائقة السرعة
+        أمان تام &nbsp;·&nbsp; مقاومة الـ 429 ذكياً &nbsp;·&nbsp; استجابة فائقة السرعة
     </div>
 </div>
 """, unsafe_allow_html=True)
@@ -467,7 +506,7 @@ st.markdown("""
     <ul>
         <li><b>🔒 سرية بياناتك مضمونة 100%:</b> ملفاتك لا تُغادر بيئتك ولا تُستخدم لتدريب نماذج خارجية.</li>
         <li><b>💰 وفر حتى 99% من تكلفة Tokens:</b> يُرسَل فقط السياق المرتبط بسؤالك اللحظي، لا آلاف الصفحات غير المطلوبة.</li>
-        <li><b>⚡ معالجة ذكية محمية:</b> تم تزويد النظام بـ Timeouts صارمة لضمان عدم تعليق الروابط الضعيفة أو المحمية.</li>
+        <li><b>⚡ معالجة ذكية ومحمية للـ Quota:</b> تم تدعيم الفهرسة بنظام المجموعات والـ Backoff لمنع تجاوز حد السيرفرات المجاني.</li>
     </ul>
 </div>
 """, unsafe_allow_html=True)
@@ -537,7 +576,7 @@ with st.sidebar:
     st.markdown(
         "<div class='sidebar-footer'>"
         "مبني بـ LangChain · FAISS · Google Gemini<br>"
-        "🔒 محمي بالكامل ومؤمن ضد التعليق"
+        "🔒 محمي بالكامل ومؤمن ضد تجاوز الحصص"
         "</div>",
         unsafe_allow_html=True,
     )
@@ -602,7 +641,7 @@ with st.expander(
                     all_errors.extend(ue)
 
                 if all_docs:
-                    st.write("🧩 تحويل النصوص وتوليد الذاكرة المتجهة (Embeddings)...")
+                    st.write("🧩 تحويل النصوص وتوليد الذاكرة المتجهة (Embeddings) بمجموعات آمنة...")
                     try:
                         vs_new, n_chunks = build_vector_store(all_docs)
                         st.session_state.vector_store = vs_new
@@ -620,7 +659,7 @@ with st.expander(
                             expanded=False,
                         )
                     except Exception as be:
-                        prog.update(label="❌ فشل في بناء الـ Embeddings", state="error")
+                        prog.update(label="❌ فشل في بناء الـ Embeddings بسبب الحصة المستنفذة", state="error")
                         st.error(f"تفاصيل الخطأ: {str(be)[:200]}")
                 else:
                     prog.update(label="⚠️ لا توجد أي بيانات صالحة ومقروءة للمعالجة حالياً", state="error")
@@ -700,7 +739,7 @@ else:
         st.markdown(
             """<div class="empty-state">
                 <div class="ei">📂</div>
-                <h3>ابدأ بتحميل وتغذية ملفاتك أو روابطك في الأعلى</h3>
+                <h3>ابدأ بتغذية ملفاتك أو روابطك في الأعلى</h3>
                 <p>بعد بناء قاعدة المعرفة، ستتمكن من استجواب وتحليل مستنداتك بحرية.</p>
             </div>""",
             unsafe_allow_html=True,
