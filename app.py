@@ -29,7 +29,7 @@ CHUNK_SIZE    = 1_000
 CHUNK_OVERLAP = 200
 TOP_K         = 6
 EMBED_MODEL   = "gemini-embedding-001"
-DEFAULT_MODEL = "gemini-3.1-flash-lite"
+DEFAULT_MODEL = "gemini-2.0-flash"
 MAX_FILE_MB   = 25          # per-file upload limit
 MAX_URLS      = 8           # maximum web URLs per session
 
@@ -365,44 +365,40 @@ def build_vector_store(docs: list[Document]) -> tuple[FAISS, int]:
 # ═══════════════════════════════════════════════════════════════════════════════
 #  🤖  MODEL HELPERS
 # ═══════════════════════════════════════════════════════════════════════════════
-if st.button("🔥 بناء وتحديث قاعدة المعرفة الآن", type="primary"):
-        if uploaded_files:
-            with st.status("🚀 جاري استخراج النصوص وتقسيم البيانات...") as status:
-                all_docs = load_uploaded_files(uploaded_files)
-                if all_docs:
-                    status.update(label="🧬 جاري توليد الـ Embeddings وبناء كشاف FAISS...")
-                    text_splitter = RecursiveCharacterTextSplitter(chunk_size=CHUNK_SIZE, chunk_overlap=CHUNK_OVERLAP)
-                    split_chunks = text_splitter.split_documents(all_docs)
-                    
-                    # 🛡️ سطر الحماية: فلترة أي قطع فارغة تماماً لتجنب أخطاء السيرفر
-                    split_chunks = [c for c in split_chunks if c.page_content.strip()]
-                    
-                    if not split_chunks:
-                        status.update(label="❌ فشل البناء - ملفات فارغة", state="error")
-                        st.error("❌ الملفات المرفوعة لا تحتوي على نصوص صالحة للقراءة أو فارغة!")
-                        st.stop()
-                    
-                    # 🚀 استخدام موديل text-embedding-004 الحديث والمستقر مباشرة لضمان عدم حدوث الـ Exception
-                    embeddings = GoogleGenerativeAIEmbeddings(model="models/text-embedding-004", google_api_key=_API_KEY)
-                    vector_store = FAISS.from_documents(split_chunks, embeddings)
-                    
-                    # حفظ البيانات في الـ Session State
-                    st.session_state.vector_store = vector_store
-                    st.session_state.meta_stats = {
-                        "files": len(uploaded_files),
-                        "chunks": len(split_chunks)
-                    }
-                    
-                    status.update(label="🧠 جاري تحليل المحتوى لتوليد أسئلة ذكية...")
-                    st.session_state.suggested_queries = generate_smart_queries(all_docs)
-                    
-                    status.update(label="✅ تم بناء قاعدة المعرفة واقتراح الأسئلة بنجاح!", state="complete")
-                    st.rerun()
-                else:
-                    status.update(label="❌ فشل استخراج النصوص", state="error")
-                    st.error("فشل استخراج أي نصوص صالحة من الملفات المرفوعة.")
-        else:
-            st.warning("الرجاء رفع ملف واحد على الأقل أولاً.")
+@st.cache_data(ttl=600, show_spinner=False)
+def list_models() -> list[str]:
+    """Fetch available Gemini models that support generateContent."""
+    try:
+        return [
+            m.name.split("/")[-1]
+            for m in genai.list_models()
+            if "generateContent" in m.supported_generation_methods
+        ]
+    except Exception:
+        return [DEFAULT_MODEL]
+
+
+def build_system_prompt(strict: bool) -> str:
+    if strict:
+        return (
+            "أنت مساعد مؤسسي دقيق. أجب حصراً بناءً على السياق المُرفق. "
+            "إن لم تجد الإجابة اكتب فقط: 'المعلومة غير متوفرة في الوثائق المرفوعة.'"
+        )
+    return (
+        "أنت خبير تحليلي. ادمج السياق المُرفق مع معرفتك لتقديم تحليل عميق ومفيد. "
+        "استنتج الأنماط وقدّم توصيات عملية."
+    )
+
+
+def classify_error(exc: Exception) -> str:
+    msg = str(exc)
+    if "429" in msg or "quota" in msg.lower():
+        return "⚠️ تم استنفاد حصة النموذج الحالي. غيّره من الشريط الجانبي وأعد المحاولة."
+    if "api_key" in msg.lower() or "auth" in msg.lower():
+        return "🔑 خطأ في مفتاح الـ API — تحقق من Streamlit Secrets."
+    return f"❌ خطأ غير متوقع: {msg[:220]}"
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 #  🖼️  HERO HEADER
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -457,44 +453,24 @@ with st.sidebar:
     st.divider()
 
     # Knowledge-base status
-   if st.button("🔥 بناء وتحديث قاعدة المعرفة الآن", type="primary"):
-        if uploaded_files:
-            with st.status("🚀 جاري استخراج النصوص وتقسيم البيانات...") as status:
-                all_docs = load_uploaded_files(uploaded_files)
-                if all_docs:
-                    status.update(label="🧬 جاري توليد الـ Embeddings وبناء كشاف FAISS...")
-                    text_splitter = RecursiveCharacterTextSplitter(chunk_size=CHUNK_SIZE, chunk_overlap=CHUNK_OVERLAP)
-                    split_chunks = text_splitter.split_documents(all_docs)
-                    
-                    # 🛡️ سطر الحماية: فلترة أي قطع فارغة تماماً لتجنب أخطاء السيرفر
-                    split_chunks = [c for c in split_chunks if c.page_content.strip()]
-                    
-                    if not split_chunks:
-                        status.update(label="❌ فشل البناء - ملفات فارغة", state="error")
-                        st.error("❌ الملفات المرفوعة لا تحتوي على نصوص صالحة للقراءة أو فارغة!")
-                        st.stop()
-                    
-                    # 🚀 استخدام موديل text-embedding-004 الحديث والمستقر مباشرة لضمان عدم حدوث الـ Exception
-                    embeddings = GoogleGenerativeAIEmbeddings(model="models/text-embedding-004", google_api_key=_API_KEY)
-                    vector_store = FAISS.from_documents(split_chunks, embeddings)
-                    
-                    # حفظ البيانات في الـ Session State
-                    st.session_state.vector_store = vector_store
-                    st.session_state.meta_stats = {
-                        "files": len(uploaded_files),
-                        "chunks": len(split_chunks)
-                    }
-                    
-                    status.update(label="🧠 جاري تحليل المحتوى لتوليد أسئلة ذكية...")
-                    st.session_state.suggested_queries = generate_smart_queries(all_docs)
-                    
-                    status.update(label="✅ تم بناء قاعدة المعرفة واقتراح الأسئلة بنجاح!", state="complete")
-                    st.rerun()
-                else:
-                    status.update(label="❌ فشل استخراج النصوص", state="error")
-                    st.error("فشل استخراج أي نصوص صالحة من الملفات المرفوعة.")
-        else:
-            st.warning("الرجاء رفع ملف واحد على الأقل أولاً.")
+    if st.session_state.vector_store:
+        st.markdown(
+            '<div class="live-badge"><span class="pulse-dot"></span>قاعدة المعرفة نشطة</div>',
+            unsafe_allow_html=True,
+        )
+        s = st.session_state.meta_stats
+        st.markdown(
+            f"<div style='margin-top:12px;font-size:.84rem;color:#6B7280;direction:rtl;'>"
+            f"📄 <b>{s['files']}</b> ملفات &nbsp;·&nbsp; "
+            f"🌐 <b>{s['urls']}</b> روابط &nbsp;·&nbsp; "
+            f"🧩 <b>{s['chunks']}</b> جزء"
+            f"</div>",
+            unsafe_allow_html=True,
+        )
+    else:
+        st.info("⏳ لم تُبنَ قاعدة معرفة بعد.")
+
+    st.divider()
 
     # Download chat log
     if st.session_state.chat_history:
@@ -610,8 +586,7 @@ with st.expander(
                 st.rerun()
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-#  📊  METRICS  +  QUICK ACTIONS  (only when VS is ready)
+# 📊 METRICS + QUICK ACTIONS (only when VS is ready)
 # ═══════════════════════════════════════════════════════════════════════════════
 if st.session_state.vector_store:
     s = st.session_state.meta_stats
@@ -619,15 +594,15 @@ if st.session_state.vector_store:
         f"""
         <div class="metrics-grid">
             <div class="m-card">
-                <span class="m-num">{s['files']}</span>
-                <span class="m-label">📄 ملفات مُفهرسة</span>
+                <span class="m-num">{s.get('files', 0)}</span>
+                <span class="m-label">📄 ملفات مفهرسة</span>
             </div>
             <div class="m-card">
-                <span class="m-num">{s['urls']}</span>
-                <span class="m-label">🌐 روابط مُعالَجة</span>
+                <span class="m-num">{s.get('urls', 0)}</span>
+                <span class="m-label">🌐 روابط معالجة</span>
             </div>
             <div class="m-card">
-                <span class="m-num">{s['chunks']}</span>
+                <span class="m-num">{s.get('chunks', 0)}</span>
                 <span class="m-label">🧩 قطعة في الذاكرة</span>
             </div>
         </div>
@@ -635,28 +610,20 @@ if st.session_state.vector_store:
         unsafe_allow_html=True,
     )
 
-    st.markdown("**💡 استعلامات سريعة:**")
-    _QUICK = [
-        (
-            "🔒 مدة شحن عميل الإسكندرية",
-            "كم استغرق الشحن بالضبط لعميل الإسكندرية وائل غنيم وما هو السبب المكتوب في السجلات؟",
-        ),
-        (
-            "💡 تحليل هندسي لشاحن 65 واط",
-            "بناءً على شكوى العميل طارق البشري بخصوص حرارة الشاحن 65 واط، "
-            "حلّل المشكلة هندسياً وقترح حلولاً للتصنيع القادم.",
-        ),
-        (
-            "📈 شكاوى الساعة الذكية",
-            "استخرج الشكوى الخاصة بتطبيق الساعة الذكية Pro ولماذا تستهلك البطارية بشكل مفرط؟",
-        ),
-    ]
-    qa1, qa2, qa3 = st.columns(3)
-    for col, (label, query) in zip([qa1, qa2, qa3], _QUICK):
-        with col:
-            if st.button(label, use_container_width=True):
-                st.session_state.quick_input = query
-
+    # 💡 عرض الأسئلة المقترحة ديناميكياً بدلاً من المصفوفة الثابتة القديمة
+    if st.session_state.get("suggested_queries"):
+        st.markdown("**💡 استعلامات سريعة مقترحة ذكياً بناءً على ملفاتك:**")
+        
+        queries = st.session_state.suggested_queries
+        cols = st.columns(len(queries))
+        
+        for col, query in zip(cols, queries):
+            with col:
+                # تقصير النص المعروض على الزر لو طويل عشان التنسيق ميبوظش
+                display_label = query[:45] + "..." if len(query) > 45 else query
+                if st.button(display_label, key=f"dynamic_btn_{hash(query)}", use_container_width=True):
+                    st.session_state.quick_input = query
+                    st.rerun()
 
 # ═══════════════════════════════════════════════════════════════════════════════
 #  💬  CHAT INTERFACE
