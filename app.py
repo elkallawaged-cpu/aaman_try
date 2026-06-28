@@ -29,7 +29,7 @@ CHUNK_SIZE    = 1_000
 CHUNK_OVERLAP = 200
 TOP_K         = 6
 EMBED_MODEL   = "gemini-embedding-001"
-DEFAULT_MODEL = "gemini-2.0-flash"
+DEFAULT_MODEL = "gemini-3.1-flash-lite"
 MAX_FILE_MB   = 25          # per-file upload limit
 MAX_URLS      = 8           # maximum web URLs per session
 
@@ -263,6 +263,7 @@ _DEFAULTS: dict = {
     "vector_store": None,                            # FAISS | None
     "all_docs": [],                                  # لتخزين المستندات من أجل التوليد الديناميكي
     "suggested_queries": [],                         # قائمة الاستعلامات المقترحة ذكياً
+    "query_gen_error": None,                         # لتتبع وحفظ أي خطأ في توليد الأسئلة المقترحة
     "meta_stats":   {"files": 0, "urls": 0, "chunks": 0},
     "quick_input":  "",                              # pre-filled chat query
 }
@@ -392,15 +393,17 @@ def build_system_prompt(strict: bool) -> str:
     )
 
 
-def generate_smart_queries(docs: list[Document], current_mode: str) -> list[str]:
-    """توليد 3 أسئلة مخصصة وقصيرة جداً بناءً على محتوى الملف والوضع المختار"""
+def generate_smart_queries(docs: list[Document], current_mode: str, model_name: str) -> list[str]:
+    """توليد 3 أسئلة مخصصة وقصيرة جداً بناءً على محتوى الملف والنموذج المختار"""
     try:
         if not docs:
             return []
         
-        # قراءة مقتطف صغير لسرعة الاستجابة
+        st.session_state["query_gen_error"] = None # تصفير الخطأ طالما المحاولة بدأت
         sample_text = "\n".join([d.page_content[:600] for d in docs[:3]])
-        model = genai.GenerativeModel(DEFAULT_MODEL)
+        
+        # 🎯 استخدام النموذج المختار ديناميكياً لتجنب مشاكل الـ Quota أو الإصدارات
+        model = genai.GenerativeModel(model_name)
         
         if current_mode == "strict":
             mode_instruction = "الوضع الحالي: [صارم]. ركز تماماً على استخراج الحقائق المباشرة، الأرقام الصريحة، والتواريخ المذكورة نصاً بدون استنتاج."
@@ -420,12 +423,14 @@ def generate_smart_queries(docs: list[Document], current_mode: str) -> list[str]
         lines = [line.strip() for line in response.text.split("\n") if line.strip()]
         cleaned_queries = [re.sub(r'^\d+[\.\-\)]\s*', '', q).strip() for q in lines]
         return [q for q in cleaned_queries if q][:3]
-    except Exception:
-        # خطة بديلة سريعة في حال حدوث أي انقطاع
+        
+    except Exception as e:
+        # حفظ الخطأ لإظهاره بشفافية للمستخدم بدل الاختفاء
+        st.session_state["query_gen_error"] = str(e)
         if current_mode == "strict":
-            return ["ما هي الأرقام والتواريخ الصريحة؟", "استخرج الشروط المطلوبة.", "ما هي المسؤوليات المحددة؟"]
+            return ["ما هي الحقائق الصريحة في الملف؟", "استخرج أهم الأرقام والتواريخ المحددة.", "ما هي الشروط والأحكام المذكورة؟"]
         else:
-            return ["ما هي أسباب المشكلة؟", "حلل المقترحات والتوصيات.", "ملخص لأهم نقاط الملف."]
+            return ["ما هو التحليل العام للمستند؟", "ما هي أبرز المقترحات والتوصيات؟", "ملخص شامل لأهم نقاط الملف."]
 
 
 def classify_error(exc: Exception) -> str:
@@ -601,8 +606,9 @@ with st.expander(
                     try:
                         vs_new, n_chunks = build_vector_store(all_docs)
                         st.session_state.vector_store = vs_new
-                        st.session_state.all_docs = all_docs # 📥 حفظ المستندات للتوليد الديناميكي
-                        st.session_state.suggested_queries = [] # تصفير الأسئلة القديمة لإجبار النظام على التوليد
+                        st.session_state.all_docs = all_docs 
+                        st.session_state.suggested_queries = [] # تفريغ القائمة القديمة لإجبار السيستم على التوليد الجديد
+                        st.session_state.query_gen_error = None # تصفير أخطاء التوليد القديمة
                         st.session_state.meta_stats = {
                             "files": f_count,
                             "urls":  u_count,
@@ -626,7 +632,7 @@ with st.expander(
                 st.rerun()
 
 
-# 📊 METRICS + QUICK ACTIONS (التحميل الديناميكي المخصص التلقائي مع الـ Loading)
+# 📊 METRICS + QUICK ACTIONS (التوليد الديناميكي الفعلي)
 # ═══════════════════════════════════════════════════════════════════════════════
 if st.session_state.vector_store:
     s = st.session_state.meta_stats
@@ -650,11 +656,11 @@ if st.session_state.vector_store:
         unsafe_allow_html=True,
     )
 
-    # تهيئة ومراقبة تغيير الوضع (Strict أو Hybrid)
+    # تتبع النمط الحالي ومراقبته
     if "last_mode" not in st.session_state:
         st.session_state.last_mode = mode
 
-    # إذا تغير النمط، نصفر القائمة لتشغيل الـ Loading من جديد فوراً
+    # لو غيرت النمط يفرغ الأسئلة عشان يعيد التوليد فوراً بالنمط الجديد
     if st.session_state.last_mode != mode:
         st.session_state.last_mode = mode
         st.session_state.suggested_queries = []
@@ -662,14 +668,19 @@ if st.session_state.vector_store:
     mode_title = "الصارم" if mode == "strict" else "المختلط"
     st.markdown(f"**💡 استعلامات مقترحة مخصصة لملفك ({mode_title}):**")
     
-    # ⏳ مرحلة الـ Loading والـ Spinner التلقائي في حال كانت القائمة فارغة
+    # ⏳ مرحلة الـ الـ Spinner الحقيقي لما يبدأ يحلل باستعمال الموديل المختار
     if not st.session_state.get("suggested_queries"):
         with st.spinner("⏳ جاري تحليل مستنداتك وتوليد أسئلة ذكية تناسب الوضع المختار..."):
             docs_to_analyze = st.session_state.get("all_docs", [])
-            st.session_state.suggested_queries = generate_smart_queries(docs_to_analyze, mode)
+            # تم تمرير selected_model لحل مشكلة الجمود البرمجي الثابت
+            st.session_state.suggested_queries = generate_smart_queries(docs_to_analyze, mode, selected_model)
         st.rerun()
 
-    # 🎯 عرض الـ 3 أزرار الصغيرة والقصيرة جداً بجانب بعضها
+    # لو التوليد اللحظي فشل لأي سبب بره الإرادة، هيظهرلك كابشن صغير هنا يقولك السبب ايه بالظبط عشان تصلحه
+    if st.session_state.get("query_gen_error"):
+        st.caption(f"⚠️ *ملاحظة: تعذر التوليد اللحظي وجاري استخدام أسئلة ذكية عامة بسبب الخطأ التالي:* `{st.session_state.query_gen_error}`")
+
+    # عرض الـ 3 أزرار اللحظية
     queries = st.session_state.suggested_queries
     cols = st.columns(len(queries))
     for col, query in zip(cols, queries):
