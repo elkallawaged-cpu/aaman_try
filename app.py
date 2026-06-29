@@ -1,14 +1,10 @@
 """
 RAG Enterprise Assistant — Streamlit App
-Improvements over v1:
-  · Professional white-background UI with Cairo font
-  · Input validation & sanitization (URLs, file sizes, HTML escaping)
-  · Organised into clear, testable helper functions
-  · Proper session-state bootstrapping and model caching
-  · Granular, actionable error messages
-  · Robust Web Scraping fix with Custom User-Agent
-  · FIX: Dynamic file syncing to reset vector store on file removal/change
-  · FIX: Upgraded embedding model and added defensive checks against empty chunks
+Improvements & Fixes:
+  · FIX: Set EMBED_MODEL to "models/embedding-001" to resolve 404 error.
+  · FIX: Unified class call to GoogleGenAIEmbeddings to prevent NameError.
+  · Professional white-background UI with Cairo font.
+  · Dynamic file syncing to reset vector store on file removal/change.
 """
 
 import os
@@ -34,8 +30,8 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 CHUNK_SIZE    = 1_000
 CHUNK_OVERLAP = 200
 TOP_K         = 6
-EMBED_MODEL   = "text-embedding-004"  # 🔥 تحديث الموديل للإصدار الأحدث والأكثر استقراراً وتفادي الـ Quota
-DEFAULT_MODEL = "gemini-3.1-flash-lite"
+EMBED_MODEL   = "models/embedding-001"  # 🔥 تم التعديل للاسم الرسمي الصحيح لمنع خطأ 404
+DEFAULT_MODEL = "gemini-1.5-flash"      # موديل افتراضي مستقر وسريع جداً للـ RAG
 MAX_FILE_MB   = 25          # per-file upload limit
 MAX_URLS      = 8           # maximum web URLs per session
 
@@ -267,7 +263,7 @@ if not _API_KEY:
 _DEFAULTS: dict = {
     "chat_history": [],                              # list[tuple[role, text]]
     "vector_store": None,                            # FAISS | None
-    "indexed_file_names": [],                        # 🔥 مصفوفة لتتبع بصمة الأسماء المفهرسة حالياً لمنع التجمّد والخلط
+    "indexed_file_names": [],                        # مصفوفة لتتبع بصمة الأسماء المفهرسة حالياً
     "all_docs": [],                                  # لتخزين المستندات من أجل التوليد الديناميكي
     "suggested_queries": [],                         # قائمة الاستعلامات المقترحة ذكياً
     "query_gen_error": None,                         # لتتبع وحفظ أي خطأ في توليد الأسئلة المقترحة
@@ -283,10 +279,7 @@ for _k, _v in _DEFAULTS.items():
 #  📦  DOCUMENT LOADING
 # ═══════════════════════════════════════════════════════════════════════════════
 def load_files(files) -> tuple[list[Document], int, list[str]]:
-    """
-    Parse uploaded files into LangChain Documents.
-    Returns (docs, successful_count, error_messages).
-    """
+    """Parse uploaded files into LangChain Documents."""
     docs, count, errors = [], 0, []
 
     for f in files:
@@ -332,10 +325,7 @@ def load_files(files) -> tuple[list[Document], int, list[str]]:
 
 
 def load_urls(raw: str) -> tuple[list[Document], int, list[str]]:
-    """
-    Scrape web pages from a newline-separated URL list.
-    Returns (docs, successful_count, error_messages).
-    """
+    """Scrape web pages from a newline-separated URL list."""
     docs, count, errors = [], 0, []
     lines = [u.strip() for u in raw.splitlines() if u.strip()]
 
@@ -343,7 +333,6 @@ def load_urls(raw: str) -> tuple[list[Document], int, list[str]]:
         errors.append(f"الحد الأقصى {MAX_URLS} روابط — تم تجاهل الزائد.")
         lines = lines[:MAX_URLS]
 
-    # التعديل الجوهري: إضافة ترويسة متصفح حقيقي لتجنب حظر الـ HTTP 403
     request_headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
     }
@@ -353,7 +342,6 @@ def load_urls(raw: str) -> tuple[list[Document], int, list[str]]:
             errors.append(f"رابط غير صالح أو غير آمن: '{safe_html(url)}'")
             continue
         try:
-            # تمرير الـ headers للـ WebBaseLoader لضمان القراءة الناجحة
             loader = WebBaseLoader(web_path=url, requests_kwargs={"headers": request_headers})
             for d in loader.load():
                 d.metadata["source"] = url
@@ -370,7 +358,6 @@ def load_urls(raw: str) -> tuple[list[Document], int, list[str]]:
 # ═══════════════════════════════════════════════════════════════════════════════
 def build_vector_store(docs: list[Document]) -> tuple[FAISS, int]:
     """Chunk documents, embed them, and return a FAISS index."""
-    # 🔥 تصفية النصوص الفارغة والمسافات الزائدة قبل التقطيع منعاً لانهيار دالة الـ Embeddings
     valid_docs = [d for d in docs if d.page_content and d.page_content.strip()]
     if not valid_docs:
         raise ValueError("جميع المستندات الممررة فارغة أو لم يتم استخراج أي نصوص منها بنجاح.")
@@ -384,7 +371,8 @@ def build_vector_store(docs: list[Document]) -> tuple[FAISS, int]:
     if not chunks:
         raise ValueError("لم يتم توليد أي أجزاء نصية (Chunks) صالحة من المستندات المرفوعة.")
 
-    emb = GoogleGenerativeAIEmbeddings(model=EMBED_MODEL, google_api_key=_API_KEY)
+    # 🔥 تعديل الكلاس إلى GoogleGenAIEmbeddings وتمرير اسم الموديل 001 الصحيح لمنع أي NameError أو 404
+    emb = GoogleGenAIEmbeddings(model=EMBED_MODEL, google_api_key=_API_KEY)
     return FAISS.from_documents(chunks, emb), len(chunks)
 
 
@@ -422,10 +410,9 @@ def generate_smart_queries(docs: list[Document], current_mode: str, model_name: 
         if not docs:
             return []
         
-        st.session_state["query_gen_error"] = None # تصفير الخطأ طالما المحاولة بدأت
+        st.session_state["query_gen_error"] = None
         sample_text = "\n".join([d.page_content[:600] for d in docs[:3]])
         
-        # استخدام النموذج المختار ديناميكياً لتجنب مشاكل الـ Quota أو الإصدارات
         model = genai.GenerativeModel(model_name)
         
         if current_mode == "strict":
@@ -448,7 +435,6 @@ def generate_smart_queries(docs: list[Document], current_mode: str, model_name: 
         return [q for q in cleaned_queries if q][:3]
         
     except Exception as e:
-        # حفظ الخطأ لإظهاره بشفافية للمستخدم بدل الاختفاء
         st.session_state["query_gen_error"] = str(e)
         if current_mode == "strict":
             return ["ما هي الحقائق الصريحة في الملف؟", "استخرج أهم الأرقام والتواريخ المحددة.", "ما هي الشروط والأحكام المذكورة?"]
@@ -518,7 +504,6 @@ with st.sidebar:
 
     st.divider()
 
-    # Knowledge-base status
     if st.session_state.vector_store:
         st.markdown(
             '<div class="live-badge"><span class="pulse-dot"></span>قاعدة المعرفة نشطة</div>',
@@ -538,7 +523,6 @@ with st.sidebar:
 
     st.divider()
 
-    # Download chat log
     if st.session_state.chat_history:
         log = "\n\n".join(
             f"{'المستخدم' if r == 'user' else 'المساعد'}: {t}"
@@ -586,7 +570,6 @@ with st.expander(
             label_visibility="collapsed",
         )
         
-        # 🔥 تصفير ومزامنة الذاكرة فوراً إذا قام المستخدم بحذف ملف أو استبداله بملف آخر
         current_upload_names = [f.name for f in uploaded] if uploaded else []
         if st.session_state.vector_store and current_upload_names != st.session_state.indexed_file_names:
             st.session_state.vector_store = None
@@ -642,9 +625,9 @@ with st.expander(
                         vs_new, n_chunks = build_vector_store(all_docs)
                         st.session_state.vector_store = vs_new
                         st.session_state.all_docs = all_docs 
-                        st.session_state.indexed_file_names = [f.name for f in uploaded] if uploaded else [] # 🔥 تخزين البصمة الحالية للأسماء بنجاح
-                        st.session_state.suggested_queries = [] # تفريغ القائمة القديمة لإجبار السيستم على التوليد الجديد
-                        st.session_state.query_gen_error = None # تصفير أخطاء التوليد القديمة
+                        st.session_state.indexed_file_names = [f.name for f in uploaded] if uploaded else []
+                        st.session_state.suggested_queries = []
+                        st.session_state.query_gen_error = None
                         st.session_state.meta_stats = {
                             "files": f_count,
                             "urls":  u_count,
@@ -657,7 +640,7 @@ with st.expander(
                         )
                     except Exception as be:
                         prog.update(label="❌ فشل في بناء الـ Embeddings", state="error")
-                        st.error(f"تفاصيل كاملة: {str(be)}") # طباعة تفصيلية لتسهيل كشف الأخطاء
+                        st.error(f"تفاصيل كاملة: {str(be)}")
                 else:
                     prog.update(label="⚠️ لا توجد بيانات صالحة للمعالجة", state="error")
 
@@ -693,11 +676,9 @@ if st.session_state.vector_store:
         unsafe_allow_html=True,
     )
 
-    # تتبع النمط الحالي ومراقبته
     if "last_mode" not in st.session_state:
         st.session_state.last_mode = mode
 
-    # لو غيرت النمط يفرغ الأسئلة عشان يعيد التوليد فوراً بالنمط الجديد
     if st.session_state.last_mode != mode:
         st.session_state.last_mode = mode
         st.session_state.suggested_queries = []
@@ -705,18 +686,15 @@ if st.session_state.vector_store:
     mode_title = "الصارم" if mode == "strict" else "المختلط"
     st.markdown(f"**💡 استعلامات مقترحة مخصصة لملفك ({mode_title}):**")
     
-    # ⏳ مرحلة الـ الـ Spinner الحقيقي لما يبدأ يحلل باستعمال الموديل المختار
     if not st.session_state.get("suggested_queries"):
         with st.spinner("⏳ جاري تحليل مستنداتك وتوليد أسئلة ذكية تناسب الوضع المختار..."):
             docs_to_analyze = st.session_state.get("all_docs", [])
             st.session_state.suggested_queries = generate_smart_queries(docs_to_analyze, mode, selected_model)
         st.rerun()
 
-    # لو التوليد اللحظي فشل لأي سبب بره الإرادة، هيظهرلك كابشن صغير هنا يقولك السبب ايه بالظبط عشان تصلحه
     if st.session_state.get("query_gen_error"):
         st.caption(f"⚠️ *ملاحظة: تعذر التوليد اللحظي وجاري استخدام أسئلة ذكية عامة بسبب الخطأ التالي:* `{st.session_state.query_gen_error}`")
 
-    # عرض الـ 3 أزرار اللحظية
     queries = st.session_state.suggested_queries
     cols = st.columns(len(queries))
     for col, query in zip(cols, queries):
@@ -732,7 +710,6 @@ if st.session_state.vector_store:
 st.markdown('<hr class="sep">', unsafe_allow_html=True)
 st.markdown("### 💬 الاستعلام والتحليل الذكي")
 
-# — render history —
 if st.session_state.chat_history:
     for role, text in st.session_state.chat_history:
         with st.chat_message(role):
@@ -757,7 +734,6 @@ else:
             unsafe_allow_html=True,
         )
 
-# — get query (typed or quick-action) —
 typed_q = st.chat_input("اسأل المساعد عن أي شيء في وثائقك...")
 current_q: str | None = typed_q
 
@@ -765,9 +741,8 @@ if st.session_state.quick_input:
     current_q = st.session_state.quick_input
     st.session_state.quick_input = ""
 
-# — process query —
 if current_q:
-    query = safe_html(current_q)       # sanitize before display / API call
+    query = safe_html(current_q)
 
     with st.chat_message("user"):
         st.write(query)
