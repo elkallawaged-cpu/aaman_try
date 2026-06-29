@@ -24,7 +24,7 @@ import streamlit as st
 from langchain_community.document_loaders import Docx2txtLoader, PyPDFLoader, WebBaseLoader
 from langchain_community.vectorstores import FAISS
 from langchain_core.documents import Document
-from langchain_google_genai import GoogleGenerativeAIEmbeddings
+from langchain_google_genai import GoogleGenAIEmbeddings
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 
@@ -34,7 +34,7 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 CHUNK_SIZE    = 1_000
 CHUNK_OVERLAP = 200
 TOP_K         = 6
-EMBED_MODEL   = "embedding-001"  # 🔥 تحديث الموديل للإصدار الأحدث والأكثر استقراراً وتفادي الـ Quota
+EMBED_MODEL   = "text-embedding-004"  # 🔥 تحديث الموديل للإصدار الأحدث والأكثر استقراراً وتفادي الـ Quota
 DEFAULT_MODEL = "gemini-3.1-flash-lite"
 MAX_FILE_MB   = 25          # per-file upload limit
 MAX_URLS      = 8           # maximum web URLs per session
