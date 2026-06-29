@@ -2,6 +2,7 @@ import os
 import re
 import html as html_lib
 import tempfile
+from collections import Counter
 
 import google.generativeai as genai
 import streamlit as st
@@ -17,9 +18,21 @@ CHUNK_SIZE    = 1_000
 CHUNK_OVERLAP = 200
 TOP_K         = 6
 EMBED_MODEL   = "gemini-embedding-001"
-DEFAULT_MODEL = "gemini-2.0-flash"
+DEFAULT_MODEL = "gemini-3.1-flash-lite"
 MAX_FILE_MB   = 25
 MAX_URLS      = 8
+
+# Arabic stop-words for keyword extraction
+_AR_STOP = frozenset({
+    "على","في","من","الى","عن","مع","هذا","هذه","ذلك","التي","الذي","التى","الذى",
+    "كان","قد","عند","لكن","حتى","إذا","ثم","بعض","حيث","كل","هو","هي","ما","لا",
+    "أو","أم","بل","وقد","ولا","فقد","فإذا","عليه","فيه","إلى","علي","منها","عليها",
+    "به","بها","كما","أي","بعد","قبل","خلال","ضمن","بين","نحو","عبر","فيما","لدي",
+    "لديه","لديها","هناك","هنا","كذلك","أيضا","غير","سوى","سوف","لن","لم","ليس",
+    "كلا","كلتا","كلاهما","يجب","يمكن","تكون","يكون","والتي","والذي","والتى","والذى",
+    "السلام","عليكم","شكرا","جزاكم","تحية","التي","الذي","ذلك","هؤلاء","هذا","هذه",
+    "ذلك","تلك","هناك","هنا","حيث","عندما","كما","لكن","بل","أو","أم","إما","إذا",
+})
 
 
 st.set_page_config(
@@ -32,21 +45,15 @@ st.set_page_config(
 
 # -------------------------------------------------------------------
 # STYLES
-# The secret to keeping the sidebar on the LEFT with Arabic text:
-# Never put direction:rtl on html / body / .stApp — that reverses
-# Streamlit's flex row and pushes the sidebar to the right.
-# Instead, apply RTL only to text-level elements below.
 # -------------------------------------------------------------------
 st.markdown("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Cairo:wght@300;400;500;600;700;800&display=swap');
 
-/* font everywhere, NO direction on the root */
 html, body, [class*="css"] { font-family: 'Cairo', sans-serif !important; }
 .stApp { background: #F7F9FC; }
 #MainMenu, footer, header { visibility: hidden; }
 
-/* RTL only on content, not on layout containers */
 .stMarkdown, .stMarkdown p, .stMarkdown li,
 .stMarkdown h1, .stMarkdown h2, .stMarkdown h3,
 [data-testid="stChatMessageContent"],
@@ -65,14 +72,12 @@ html, body, [class*="css"] { font-family: 'Cairo', sans-serif !important; }
     border-radius: 14px !important;
 }
 
-/* sidebar — stays LEFT because we didn't flip the root direction */
 [data-testid="stSidebar"] {
     background: #fff !important;
     border-right: 1px solid #E8EDF2 !important;
 }
 [data-testid="stSidebar"] * { font-family: 'Cairo', sans-serif !important; }
 
-/* hero banner */
 .hero {
     background: linear-gradient(135deg, #0F2472 0%, #1D4ED8 55%, #60A5FA 100%);
     border-radius: 22px;
@@ -105,7 +110,6 @@ html, body, [class*="css"] { font-family: 'Cairo', sans-serif !important; }
 .hero-title { font-size: 2.2rem; font-weight: 800; color: #fff; margin: 0 0 8px; }
 .hero-sub   { font-size: 1.05rem; color: rgba(255,255,255,.84); margin: 0; }
 
-/* why-rag info banner */
 .info-banner {
     background: linear-gradient(135deg, #EFF6FF, #DBEAFE);
     border: 1px solid #BFDBFE;
@@ -118,7 +122,6 @@ html, body, [class*="css"] { font-family: 'Cairo', sans-serif !important; }
 .info-banner h4 { color: #1E40AF; font-weight: 700; margin: 0 0 10px; font-size: 1.05rem; }
 .info-banner ul { color: #1E3A8A; font-size: .95rem; line-height: 2.1; padding-right: 22px; margin: 0; }
 
-/* metric cards row */
 .metrics-grid {
     display: grid;
     grid-template-columns: repeat(3, 1fr);
@@ -145,7 +148,6 @@ html, body, [class*="css"] { font-family: 'Cairo', sans-serif !important; }
 .m-num   { font-size: 2.1rem; font-weight: 800; color: #1E3A8A; display: block; }
 .m-label { font-size: .82rem; color: #6B7280; font-weight: 500; margin-top: 4px; display: block; }
 
-/* source tags shown after answers */
 .src-tag {
     display: inline-block;
     background: #EFF6FF;
@@ -158,7 +160,6 @@ html, body, [class*="css"] { font-family: 'Cairo', sans-serif !important; }
     border: 1px solid #BFDBFE;
 }
 
-/* live status indicator */
 .live-badge {
     display: inline-flex;
     align-items: center;
@@ -184,7 +185,6 @@ html, body, [class*="css"] { font-family: 'Cairo', sans-serif !important; }
     50%       { opacity: .3; transform: scale(.8); }
 }
 
-/* all buttons */
 .stButton > button {
     font-family: 'Cairo', sans-serif !important;
     border-radius: 12px !important;
@@ -200,7 +200,6 @@ html, body, [class*="css"] { font-family: 'Cairo', sans-serif !important; }
     box-shadow: 0 4px 14px rgba(30,58,138,.22) !important;
 }
 
-/* misc polish */
 .stTextArea textarea     { font-family: 'Cairo', sans-serif !important; border-radius: 12px !important; }
 .stSelectbox > div > div { font-family: 'Cairo', sans-serif !important; border-radius: 10px !important; }
 .stAlert                 { border-radius: 12px !important; font-family: 'Cairo', sans-serif !important; }
@@ -250,13 +249,14 @@ else:
 
 
 # -------------------------------------------------------------------
-# session state  (one place, easy to reset)
+# session state
 # -------------------------------------------------------------------
 defaults = {
-    "history":  [],                          # list of (role, text)
-    "vs":       None,                        # FAISS vector store
+    "history":  [],
+    "vs":       None,
+    "chunks":   [],           # store chunks for keyword extraction
     "meta":     {"files": 0, "urls": 0, "chunks": 0},
-    "quick_q":  "",                          # quick-action query
+    "quick_q":  "",
 }
 for k, v in defaults.items():
     if k not in st.session_state:
@@ -322,7 +322,89 @@ def build_index(docs):
         chunk_size=CHUNK_SIZE, chunk_overlap=CHUNK_OVERLAP
     ).split_documents(docs)
     emb = GoogleGenerativeAIEmbeddings(model=EMBED_MODEL, google_api_key=_key)
-    return FAISS.from_documents(chunks, emb), len(chunks)
+    return FAISS.from_documents(chunks, emb), len(chunks), chunks
+
+
+# -------------------------------------------------------------------
+# keyword extraction & dynamic quick prompts
+# -------------------------------------------------------------------
+def extract_keywords(chunks, top_n=10):
+    """Extract top keywords from document chunks using frequency analysis."""
+    # Sample first 20 chunks, 800 chars each — enough signal, fast
+    sample = " ".join(d.page_content[:800] for d in chunks[:20])
+    # Match Arabic words (4+ chars) or English words (5+ chars)
+    words = re.findall(r'[\u0600-\u06FF]{4,}|[a-zA-Z]{5,}', sample)
+    # Filter out stop-words
+    filtered = [w for w in words if w not in _AR_STOP]
+    return [w for w, _ in Counter(filtered).most_common(top_n)]
+
+
+def get_quick_prompts():
+    """
+    Generate context-aware quick prompts based on the ACTUAL loaded documents.
+    Returns a list of (label, query) tuples — never hardcoded.
+    """
+    chunks = st.session_state.get("chunks", [])
+    if not chunks:
+        return []
+
+    # Unique source names (filenames / URLs)
+    sources = sorted({d.metadata.get("source", "وثيقة") for d in chunks})
+
+    # Extract top keywords from actual content
+    keywords = extract_keywords(chunks)
+
+    prompts = []
+
+    # --- Prompt 1: Summary tailored to single vs. multi-file ---
+    if len(sources) == 1:
+        src_short = os.path.basename(sources[0]) if sources[0].startswith("http") else sources[0]
+        prompts.append((
+            "&#x1F4CB; ملخص شامل",
+            f"اكتب ملخصاً تنفيذياً شاملاً لمحتوى الملف '{src_short}'. "
+            f"ابرز أهم النقاط والمفاهيم الرئيسية والاستنتاجات."
+        ))
+    else:
+        prompts.append((
+            "&#x1F4CB; ملخص شامل",
+            "اكتب ملخصاً تنفيذياً شاملاً لجميع المحتويات المرفقة. "
+            "ابرز أهم النقاط والمفاهيم الرئيسية من كل ملف."
+        ))
+
+    # --- Prompt 2: Deep-dive on top keyword from actual content ---
+    if keywords:
+        kw = keywords[0]
+        prompts.append((
+            f"&#x1F50D; عن: {esc(kw)}",
+            f"ما هو دور وأهمية '{kw}' في المحتوى المرفق؟ "
+            f"اشرح بالتفصيل مع ذكر الأمثلة والسياق المرتبط به."
+        ))
+    else:
+        prompts.append((
+            "&#x1F511; المصطلحات الرئيسية",
+            "استخرج أهم المصطلحات المتخصصة من المحتوى المرفق "
+            "وعرّف كل منها بإيجاز مع ذكر مصدره."
+        ))
+
+    # --- Prompt 3: Analytical / actionable (file-aware) ---
+    if len(sources) > 1:
+        src_list = "، ".join(
+            os.path.basename(s) if s.startswith("http") else s
+            for s in sources[:3]
+        )
+        prompts.append((
+            "&#x1F4CA; مقارنة",
+            f"قارن بين محتويات الملفات المرفقة ({src_list}). "
+            f"ما أوجه التشابه والاختلاف؟ قدّم تحليلاً منظماً."
+        ))
+    else:
+        prompts.append((
+            "&#x1F4A1; توصيات",
+            "بناءً على المحتوى المرفق، ما هي أهم التوصيات "
+            "والخطوات العملية المقترحة؟ قدّمها في نقاط واضحة."
+        ))
+
+    return prompts
 
 
 # -------------------------------------------------------------------
@@ -340,12 +422,23 @@ def list_models():
         return [DEFAULT_MODEL]
 
 
-def make_system_prompt(strict):
+def make_system_prompt(strict, has_context=True):
+    """
+    Build system instruction.
+    If strict mode but no context (no KB built), fall back gracefully
+    so the model doesn't refuse every question.
+    """
     if strict:
+        if has_context:
+            return (
+                "انت مساعد مؤسسي دقيق. "
+                "اجب فقط من السياق المرفق. "
+                "ان لم تجد الاجابة قل: 'المعلومة غير متوفرة في الوثائق.'"
+            )
         return (
-            "انت مساعد مؤسسي دقيق. "
-            "اجب فقط من السياق المرفق. "
-            "ان لم تجد الاجابة قل: 'المعلومة غير متوفرة في الوثائق.'"
+            "انت مساعد مؤسسي. لا توجد وثائق مرفقة حالياً. "
+            "اخبر المستخدم ان الوضع الصارم يتطلب رفع ملفات اولاً، "
+            "او اجب بشكل عام مع التنبيه بعدم توفر وثائق."
         )
     return (
         "انت خبير تحليلي. "
@@ -356,17 +449,17 @@ def make_system_prompt(strict):
 def nice_error(e):
     s = str(e)
     if "429" in s or "quota" in s.lower():
-        return "حصة النموذج انتهت — غير النموذج من الشريط الجانبي وحاول مجددا."
+        return "حصة النموذج انتهت — غير النموذج من الشريط الجانبي وحاول مجدداً."
     if "api_key" in s.lower() or "auth" in s.lower():
         return "مشكلة في مفتاح API — تحقق من Streamlit Secrets."
+    if "safety" in s.lower() or "blocked" in s.lower():
+        return "تم حجب الرد بواسطة فلاتر الأمان. أعد صياغة سؤالك."
     return f"خطا: {s[:200]}"
 
 
 # ===================================================================
 # UI
 # ===================================================================
-
-# hero + why-rag
 st.markdown("""
 <div class="hero">
     <div class="hero-badge">Enterprise AI Assistant</div>
@@ -389,7 +482,7 @@ st.markdown("""
 
 
 # -------------------------------------------------------------------
-# SIDEBAR  — on the LEFT (works because we didn't flip root direction)
+# SIDEBAR
 # -------------------------------------------------------------------
 with st.sidebar:
     st.markdown("### &#x2699;&#xFE0F; الاعدادات")
@@ -412,7 +505,6 @@ with st.sidebar:
 
     st.divider()
 
-    # knowledge base status
     if st.session_state.vs:
         st.markdown(
             '<div class="live-badge">'
@@ -518,9 +610,10 @@ with st.expander(
                 if all_docs:
                     st.write("بناء الذاكرة المتجهة...")
                     try:
-                        vs, n_ch = build_index(all_docs)
-                        st.session_state.vs   = vs
-                        st.session_state.meta = {"files": f_ok, "urls": u_ok, "chunks": n_ch}
+                        vs, n_ch, all_chunks = build_index(all_docs)
+                        st.session_state.vs     = vs
+                        st.session_state.chunks = all_chunks
+                        st.session_state.meta   = {"files": f_ok, "urls": u_ok, "chunks": n_ch}
                         prog.update(label="جاهز!", state="complete", expanded=False)
                     except Exception as e:
                         prog.update(label="فشل بناء Embeddings", state="error")
@@ -536,7 +629,7 @@ with st.expander(
 
 
 # -------------------------------------------------------------------
-# metrics + quick-action buttons (only when index is ready)
+# metrics + dynamic quick-action buttons
 # -------------------------------------------------------------------
 if st.session_state.vs:
     m = st.session_state.meta
@@ -560,19 +653,15 @@ if st.session_state.vs:
         unsafe_allow_html=True,
     )
 
-    st.markdown("**&#x1F4A1; استعلامات سريعة:**")
-    quick_options = [
-        ("&#x1F512; شحن عميل الاسكندرية",
-         "كم استغرق الشحن لعميل الاسكندرية وائل غنيم وما السبب في السجلات؟"),
-        ("&#x1F4A1; تحليل شاحن 65 وات",
-         "حلل مشكلة حرارة الشاحن 65 وات لعميل طارق البشري هندسيا واقترح حلولا."),
-        ("&#x1F4C8; شكاوى الساعة الذكية",
-         "ما شكوى تطبيق الساعة الذكية Pro ولماذا تستنزف البطارية؟"),
-    ]
-    for col, (label, q) in zip(st.columns(3), quick_options):
-        with col:
-            if st.button(label, use_container_width=True):
-                st.session_state.quick_q = q
+    # --- DYNAMIC quick prompts (generated from actual loaded files) ---
+    quick_options = get_quick_prompts()
+    if quick_options:
+        st.markdown("**&#x1F4A1; استعلامات سريعة مبنية على ملفاتك:**")
+        cols = st.columns(len(quick_options))
+        for col, (label, q) in zip(cols, quick_options):
+            with col:
+                if st.button(label, use_container_width=True):
+                    st.session_state.quick_q = q
 
 
 # -------------------------------------------------------------------
@@ -607,12 +696,14 @@ if not st.session_state.history:
 typed = st.chat_input("اسال عن اي شيء في وثائقك...")
 current_q = typed
 
+# quick-action override
 if st.session_state.quick_q:
     current_q = st.session_state.quick_q
     st.session_state.quick_q = ""
 
 if current_q:
-    query = esc(current_q)
+    # FIX: use raw query for the model — don't HTML-escape it
+    query = current_q
 
     with st.chat_message("user"):
         st.write(query)
@@ -621,6 +712,7 @@ if current_q:
     with st.chat_message("assistant"):
         try:
             sources = []
+            has_context = False
 
             if st.session_state.vs:
                 with st.spinner("جاري البحث في قاعدة المعرفة..."):
@@ -628,14 +720,30 @@ if current_q:
                     sources = sorted({d.metadata.get("source", "—") for d in hits})
                     context = "\n\n---\n\n".join(d.page_content for d in hits)
                     prompt  = f"السياق:\n{context}\n\nالسؤال: {query}"
+                    has_context = True
             else:
                 prompt = query
 
             model_obj = genai.GenerativeModel(
                 model_name=chosen_model,
-                system_instruction=make_system_prompt(mode == "strict"),
+                system_instruction=make_system_prompt(
+                    mode == "strict", has_context=has_context
+                ),
             )
-            answer = model_obj.generate_content(prompt).text.strip()
+            response = model_obj.generate_content(prompt)
+
+            # FIX: handle empty / blocked responses gracefully
+            try:
+                answer = response.text.strip() if response.text else ""
+            except (ValueError, AttributeError):
+                answer = ""
+
+            if not answer:
+                answer = (
+                    "عذراً، لم يتم توليد إجابة. "
+                    "حاول إعادة صياغة سؤالك أو تغيير النموذج من الشريط الجانبي."
+                )
+
             st.write(answer)
 
             if sources:
