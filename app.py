@@ -1,65 +1,78 @@
-"""
-RAG Enterprise Assistant — Streamlit App
-Improvements & Fixes:
-  · FIX: Set EMBED_MODEL to "models/embedding-001" to resolve 404 error.
-  · FIX: Unified class call to GoogleGenAIEmbeddings to prevent NameError.
-  · Professional white-background UI with Cairo font.
-  · Dynamic file syncing to reset vector store on file removal/change.
-"""
-
 import os
 import re
 import html as html_lib
 import tempfile
-
-# منع تحذيرات LangChain وتجهيز هوية مخصصة للمتصفح لمنع حظر الروابط
-os.environ["USER_AGENT"] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
 
 import google.generativeai as genai
 import streamlit as st
 from langchain_community.document_loaders import Docx2txtLoader, PyPDFLoader, WebBaseLoader
 from langchain_community.vectorstores import FAISS
 from langchain_core.documents import Document
-from langchain_google_genai import GoogleGenAIEmbeddings
+from langchain_google_genai import GoogleGenerativeAIEmbeddings
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-#  ⚙️  CONSTANTS
-# ═══════════════════════════════════════════════════════════════════════════════
+# settings
 CHUNK_SIZE    = 1_000
 CHUNK_OVERLAP = 200
 TOP_K         = 6
-EMBED_MODEL   = "models/embedding-001"  # 🔥 تم التعديل للاسم الرسمي الصحيح لمنع خطأ 404
-DEFAULT_MODEL = "gemini-1.5-flash"      # موديل افتراضي مستقر وسريع جداً للـ RAG
-MAX_FILE_MB   = 25          # per-file upload limit
-MAX_URLS      = 8           # maximum web URLs per session
+EMBED_MODEL   = "gemini-embedding-001"
+DEFAULT_MODEL = "gemini-2.0-flash"
+MAX_FILE_MB   = 25
+MAX_URLS      = 8
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-#  📐  PAGE CONFIG  (must be first Streamlit call)
-# ═══════════════════════════════════════════════════════════════════════════════
 st.set_page_config(
-    page_title="RAG — المساعد المؤسسي الذكي",
+    page_title="RAG - المساعد المؤسسي",
     page_icon="🧠",
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-#  🎨  GLOBAL STYLES  — professional white theme
-# ═══════════════════════════════════════════════════════════════════════════════
+# -------------------------------------------------------------------
+# STYLES
+# The secret to keeping the sidebar on the LEFT with Arabic text:
+# Never put direction:rtl on html / body / .stApp — that reverses
+# Streamlit's flex row and pushes the sidebar to the right.
+# Instead, apply RTL only to text-level elements below.
+# -------------------------------------------------------------------
 st.markdown("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Cairo:wght@300;400;500;600;700;800&display=swap');
 
-/* ── Base ── */
-html, body, [class*="css"] { font-family: 'Cairo', sans-serif !important; direction: rtl; }
+/* font everywhere, NO direction on the root */
+html, body, [class*="css"] { font-family: 'Cairo', sans-serif !important; }
 .stApp { background: #F7F9FC; }
 #MainMenu, footer, header { visibility: hidden; }
 
-/* ── Hero ── */
+/* RTL only on content, not on layout containers */
+.stMarkdown, .stMarkdown p, .stMarkdown li,
+.stMarkdown h1, .stMarkdown h2, .stMarkdown h3,
+[data-testid="stChatMessageContent"],
+.stTextArea textarea,
+.stAlert > div,
+[data-testid="stSidebar"] label,
+[data-testid="stSidebar"] p,
+[data-testid="stSidebar"] .stMarkdown {
+    direction: rtl !important;
+    text-align: right !important;
+}
+
+[data-testid="stChatInput"] textarea {
+    direction: rtl !important;
+    font-family: 'Cairo', sans-serif !important;
+    border-radius: 14px !important;
+}
+
+/* sidebar — stays LEFT because we didn't flip the root direction */
+[data-testid="stSidebar"] {
+    background: #fff !important;
+    border-right: 1px solid #E8EDF2 !important;
+}
+[data-testid="stSidebar"] * { font-family: 'Cairo', sans-serif !important; }
+
+/* hero banner */
 .hero {
     background: linear-gradient(135deg, #0F2472 0%, #1D4ED8 55%, #60A5FA 100%);
     border-radius: 22px;
@@ -69,319 +82,254 @@ html, body, [class*="css"] { font-family: 'Cairo', sans-serif !important; direct
     box-shadow: 0 14px 48px rgba(29,78,216,.28);
     position: relative;
     overflow: hidden;
+    direction: rtl;
 }
 .hero::before {
-    content:'';
-    position:absolute;
-    inset:0;
+    content: '';
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
     background: radial-gradient(ellipse at 30% 50%, rgba(255,255,255,.10) 0%, transparent 70%);
-    pointer-events:none;
 }
 .hero-badge {
-    display:inline-block;
-    background:rgba(255,255,255,.18);
-    color:#fff;
-    font-size:.78rem;
-    font-weight:700;
-    letter-spacing:.08em;
-    padding:4px 14px;
-    border-radius:20px;
-    margin-bottom:14px;
-    backdrop-filter:blur(4px);
-    text-transform:uppercase;
+    display: inline-block;
+    background: rgba(255,255,255,.18);
+    color: #fff;
+    font-size: .78rem;
+    font-weight: 700;
+    padding: 4px 14px;
+    border-radius: 20px;
+    margin-bottom: 14px;
+    letter-spacing: .05em;
 }
-.hero-title { font-size:2.2rem;  font-weight:800; color:#fff; margin:0 0 8px; }
-.hero-sub   { font-size:1.05rem; color:rgba(255,255,255,.84); margin:0; }
+.hero-title { font-size: 2.2rem; font-weight: 800; color: #fff; margin: 0 0 8px; }
+.hero-sub   { font-size: 1.05rem; color: rgba(255,255,255,.84); margin: 0; }
 
-/* ── Info Banner ── */
+/* why-rag info banner */
 .info-banner {
-    background: linear-gradient(135deg,#EFF6FF,#DBEAFE);
-    border:1px solid #BFDBFE;
-    border-right:4px solid #2563EB;
-    border-radius:14px;
-    padding:22px 26px;
-    margin-bottom:28px;
+    background: linear-gradient(135deg, #EFF6FF, #DBEAFE);
+    border: 1px solid #BFDBFE;
+    border-right: 4px solid #2563EB;
+    border-radius: 14px;
+    padding: 22px 26px;
+    margin-bottom: 28px;
+    direction: rtl;
 }
-.info-banner h4 { color:#1E40AF; font-weight:700; margin:0 0 10px; font-size:1.05rem; }
-.info-banner ul { color:#1E3A8A; font-size:.95rem; line-height:2.1; padding-right:22px; margin:0; }
+.info-banner h4 { color: #1E40AF; font-weight: 700; margin: 0 0 10px; font-size: 1.05rem; }
+.info-banner ul { color: #1E3A8A; font-size: .95rem; line-height: 2.1; padding-right: 22px; margin: 0; }
 
-/* ── Metrics Grid ── */
-.metrics-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:16px; margin:22px 0; }
+/* metric cards row */
+.metrics-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 16px;
+    margin: 22px 0;
+}
 .m-card {
-    background:#fff;
-    border-radius:14px;
-    padding:20px 14px;
-    text-align:center;
-    border:1px solid #E8EDF2;
-    box-shadow:0 2px 8px rgba(0,0,0,.04);
-    position:relative;
-    overflow:hidden;
+    background: #fff;
+    border-radius: 14px;
+    padding: 20px 14px;
+    text-align: center;
+    border: 1px solid #E8EDF2;
+    box-shadow: 0 2px 8px rgba(0,0,0,.04);
+    position: relative;
+    overflow: hidden;
 }
 .m-card::after {
-    content:'';
-    position:absolute;
-    bottom:0; left:0; right:0;
-    height:3px;
-    background:linear-gradient(90deg,#1E3A8A,#60A5FA);
+    content: '';
+    position: absolute;
+    bottom: 0; left: 0; right: 0;
+    height: 3px;
+    background: linear-gradient(90deg, #1E3A8A, #60A5FA);
 }
-.m-num   { font-size:2.1rem; font-weight:800; color:#1E3A8A; display:block; }
-.m-label { font-size:.82rem; color:#6B7280; font-weight:500; margin-top:4px; display:block; }
+.m-num   { font-size: 2.1rem; font-weight: 800; color: #1E3A8A; display: block; }
+.m-label { font-size: .82rem; color: #6B7280; font-weight: 500; margin-top: 4px; display: block; }
 
-/* ── Source Tags ── */
+/* source tags shown after answers */
 .src-tag {
-    display:inline-block;
-    background:#EFF6FF; color:#1E40AF;
-    font-size:.78rem; font-weight:600;
-    padding:4px 12px;
-    border-radius:20px; margin:3px;
-    border:1px solid #BFDBFE;
+    display: inline-block;
+    background: #EFF6FF;
+    color: #1E40AF;
+    font-size: .78rem;
+    font-weight: 600;
+    padding: 4px 12px;
+    border-radius: 20px;
+    margin: 3px;
+    border: 1px solid #BFDBFE;
 }
 
-/* ── Live Status Badge ── */
+/* live status indicator */
 .live-badge {
-    display:inline-flex; align-items:center; gap:7px;
-    background:#ECFDF5; color:#065F46;
-    font-size:.85rem; font-weight:700;
-    padding:7px 16px;
-    border-radius:20px;
-    border:1px solid #A7F3D0;
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    background: #ECFDF5;
+    color: #065F46;
+    font-size: .85rem;
+    font-weight: 700;
+    padding: 7px 16px;
+    border-radius: 20px;
+    border: 1px solid #A7F3D0;
+    direction: rtl;
 }
 .pulse-dot {
-    width:8px; height:8px;
-    border-radius:50%; background:#10B981;
-    animation:blink 1.8s ease-in-out infinite;
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    background: #10B981;
+    flex-shrink: 0;
+    animation: blink 1.8s ease-in-out infinite;
 }
-@keyframes blink { 0%,100%{opacity:1;transform:scale(1)} 50%{opacity:.3;transform:scale(.8)} }
+@keyframes blink {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50%       { opacity: .3; transform: scale(.8); }
+}
 
-/* ── Buttons ── */
+/* all buttons */
 .stButton > button {
-    font-family:'Cairo',sans-serif !important;
-    border-radius:12px !important;
-    font-weight:600 !important;
-    transition:all .2s ease !important;
-    direction:rtl !important;
-    white-space:normal !important;
-    height:auto !important;
-    min-height:46px !important;
-    line-height:1.5 !important;
+    font-family: 'Cairo', sans-serif !important;
+    border-radius: 12px !important;
+    font-weight: 600 !important;
+    transition: all .2s ease !important;
+    white-space: normal !important;
+    height: auto !important;
+    min-height: 46px !important;
+    line-height: 1.5 !important;
 }
 .stButton > button:hover {
-    transform:translateY(-1px) !important;
-    box-shadow:0 4px 14px rgba(30,58,138,.22) !important;
+    transform: translateY(-1px) !important;
+    box-shadow: 0 4px 14px rgba(30,58,138,.22) !important;
 }
 
-/* ── Sidebar ── */
-[data-testid="stSidebar"] { background:#fff !important; border-left:1px solid #E8EDF2 !important; }
-[data-testid="stSidebar"] * { font-family:'Cairo',sans-serif !important; }
-[data-testid="stSidebar"] label { font-weight:600 !important; color:#374151 !important; }
+/* misc polish */
+.stTextArea textarea     { font-family: 'Cairo', sans-serif !important; border-radius: 12px !important; }
+.stSelectbox > div > div { font-family: 'Cairo', sans-serif !important; border-radius: 10px !important; }
+.stAlert                 { border-radius: 12px !important; font-family: 'Cairo', sans-serif !important; }
+.streamlit-expanderHeader { font-family: 'Cairo', sans-serif !important; font-weight: 600 !important; }
 
-/* ── Chat ── */
-[data-testid="stChatMessageContent"] {
-    font-family:'Cairo',sans-serif !important;
-    font-size:.97rem !important;
-    direction:rtl !important;
-    text-align:right !important;
-    line-height:1.85 !important;
+.sep {
+    border: none;
+    height: 1px;
+    background: linear-gradient(90deg, transparent, #E2E8F0, transparent);
+    margin: 28px 0;
 }
-[data-testid="stChatInput"] {
-    font-family:'Cairo',sans-serif !important;
-    border-radius:14px !important;
-}
-[data-testid="stChatInput"]:focus-within {
-    border-color:#2563EB !important;
-    box-shadow:0 0 0 3px rgba(37,99,235,.10) !important;
-}
-
-/* ── Form Elements ── */
-.stTextArea textarea  { direction:rtl !important; font-family:'Cairo',sans-serif !important; border-radius:12px !important; }
-.stSelectbox > div > div { font-family:'Cairo',sans-serif !important; border-radius:10px !important; }
-.stAlert { border-radius:12px !important; font-family:'Cairo',sans-serif !important; }
-.streamlit-expanderHeader { font-family:'Cairo',sans-serif !important; font-weight:600 !important; }
-
-/* ── Utilities ── */
-.sep { border:none; height:1px; background:linear-gradient(90deg,transparent,#E2E8F0,transparent); margin:28px 0; }
-.empty-state { text-align:center; padding:50px 20px; color:#9CA3AF; }
-.empty-state .ei { font-size:3.6rem; margin-bottom:14px; }
-.empty-state h3  { color:#6B7280; font-size:1.1rem; margin-bottom:6px; }
-.empty-state p   { font-size:.9rem; }
-.sidebar-footer  { font-size:.76rem; color:#9CA3AF; text-align:center; direction:rtl; line-height:1.7; }
+.empty-state { text-align: center; padding: 50px 20px; color: #9CA3AF; direction: rtl; }
+.empty-state .ei { font-size: 3.6rem; margin-bottom: 14px; }
+.empty-state h3  { color: #6B7280; font-size: 1.1rem; margin-bottom: 6px; }
+.empty-state p   { font-size: .9rem; }
 </style>
 """, unsafe_allow_html=True)
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-#  🔐  SECURITY HELPERS
-# ═══════════════════════════════════════════════════════════════════════════════
+# -------------------------------------------------------------------
+# small helpers
+# -------------------------------------------------------------------
 _URL_RE = re.compile(r"^https?://[a-zA-Z0-9\-._~:/?#\[\]@!$&'()*+,;=%]+$")
 
-
-def is_valid_url(url: str) -> bool:
-    """Return True only for well-formed http/https URLs."""
-    return bool(_URL_RE.match(url.strip()))
-
-
-def safe_html(text: str) -> str:
-    """Escape special HTML characters to prevent XSS in markdown blocks."""
-    return html_lib.escape(str(text))
+def url_ok(url):  return bool(_URL_RE.match(url.strip()))
+def esc(t):       return html_lib.escape(str(t))
+def file_ok(f):   return len(f.getvalue()) / (1024 * 1024) <= MAX_FILE_MB
 
 
-def within_size_limit(uploaded_file) -> bool:
-    """Check that a UploadedFile does not exceed MAX_FILE_MB."""
-    return len(uploaded_file.getvalue()) / (1024 * 1024) <= MAX_FILE_MB
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-#  🔑  API KEY  — load once, fail fast
-# ═══════════════════════════════════════════════════════════════════════════════
-def _init_api() -> str:
-    key = (st.secrets.get("GEMINI_API_KEY") or "").strip()
-    if key:
-        genai.configure(api_key=key)
-    return key
-
-
-_API_KEY = _init_api()
-
-if not _API_KEY:
+# -------------------------------------------------------------------
+# API key
+# -------------------------------------------------------------------
+_key = (st.secrets.get("GEMINI_API_KEY") or "").strip()
+if _key:
+    genai.configure(api_key=_key)
+else:
     st.markdown("""
     <div style="background:#FEF2F2;border:1px solid #FECACA;border-right:4px solid #EF4444;
-         border-radius:14px;padding:28px;text-align:center;margin-top:40px;">
-        <h3 style="color:#991B1B;margin:0 0 10px;">⛔ مفتاح API مفقود</h3>
+         border-radius:14px;padding:28px;text-align:center;margin-top:40px;direction:rtl;">
+        <h3 style="color:#991B1B;margin:0 0 10px;">&#9940; مفتاح API مفقود</h3>
         <p style="color:#7F1D1D;margin:0;line-height:1.8;">
-            لم يتم العثور على <code>GEMINI_API_KEY</code> في إعدادات
-            <b>Streamlit → Settings → Secrets</b>.<br>
-            أضفه ثم أعد تشغيل التطبيق.
+            اضف <code>GEMINI_API_KEY</code> في
+            <b>Streamlit &rarr; Settings &rarr; Secrets</b> ثم اعد التشغيل.
         </p>
-    </div>
-    """, unsafe_allow_html=True)
+    </div>""", unsafe_allow_html=True)
     st.stop()
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-#  🗄️  SESSION STATE  — single source of truth
-# ═══════════════════════════════════════════════════════════════════════════════
-_DEFAULTS: dict = {
-    "chat_history": [],                              # list[tuple[role, text]]
-    "vector_store": None,                            # FAISS | None
-    "indexed_file_names": [],                        # مصفوفة لتتبع بصمة الأسماء المفهرسة حالياً
-    "all_docs": [],                                  # لتخزين المستندات من أجل التوليد الديناميكي
-    "suggested_queries": [],                         # قائمة الاستعلامات المقترحة ذكياً
-    "query_gen_error": None,                         # لتتبع وحفظ أي خطأ في توليد الأسئلة المقترحة
-    "meta_stats":   {"files": 0, "urls": 0, "chunks": 0},
-    "quick_input":  "",                              # pre-filled chat query
+# -------------------------------------------------------------------
+# session state  (one place, easy to reset)
+# -------------------------------------------------------------------
+defaults = {
+    "history":  [],                          # list of (role, text)
+    "vs":       None,                        # FAISS vector store
+    "meta":     {"files": 0, "urls": 0, "chunks": 0},
+    "quick_q":  "",                          # quick-action query
 }
-for _k, _v in _DEFAULTS.items():
-    if _k not in st.session_state:
-        st.session_state[_k] = _v
+for k, v in defaults.items():
+    if k not in st.session_state:
+        st.session_state[k] = v
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-#  📦  DOCUMENT LOADING
-# ═══════════════════════════════════════════════════════════════════════════════
-def load_files(files) -> tuple[list[Document], int, list[str]]:
-    """Parse uploaded files into LangChain Documents."""
-    docs, count, errors = [], 0, []
-
+# -------------------------------------------------------------------
+# document loading
+# -------------------------------------------------------------------
+def read_files(files):
+    docs, ok, errs = [], 0, []
     for f in files:
-        if not within_size_limit(f):
-            errors.append(f"'{f.name}' يتجاوز حد {MAX_FILE_MB} MB — تم تخطيه.")
+        if not file_ok(f):
+            errs.append(f"'{f.name}' اكبر من {MAX_FILE_MB} MB — تم تخطيه.")
             continue
-
-        fname = f.name.lower()
         try:
-            if fname.endswith(".txt"):
-                content = f.getvalue().decode("utf-8", errors="ignore")
-                docs.append(Document(page_content=content, metadata={"source": f.name}))
-                count += 1
-
-            elif fname.endswith(".pdf"):
-                with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
+            name = f.name.lower()
+            if name.endswith(".txt"):
+                text = f.getvalue().decode("utf-8", errors="ignore")
+                docs.append(Document(page_content=text, metadata={"source": f.name}))
+                ok += 1
+            else:
+                ext = ".pdf" if name.endswith(".pdf") else ".docx"
+                with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
                     tmp.write(f.getvalue())
                     path = tmp.name
                 try:
-                    for d in PyPDFLoader(path).load():
+                    loader = PyPDFLoader(path) if ext == ".pdf" else Docx2txtLoader(path)
+                    for d in loader.load():
                         d.metadata["source"] = f.name
                         docs.append(d)
-                    count += 1
+                    ok += 1
                 finally:
-                    os.path.exists(path) and os.remove(path)
-
-            elif fname.endswith(".docx"):
-                with tempfile.NamedTemporaryFile(delete=False, suffix=".docx") as tmp:
-                    tmp.write(f.getvalue())
-                    path = tmp.name
-                try:
-                    for d in Docx2txtLoader(path).load():
-                        d.metadata["source"] = f.name
-                        docs.append(d)
-                    count += 1
-                finally:
-                    os.path.exists(path) and os.remove(path)
-
-        except Exception as exc:
-            errors.append(f"'{f.name}': {str(exc)[:100]}")
-
-    return docs, count, errors
+                    if os.path.exists(path):
+                        os.remove(path)
+        except Exception as e:
+            errs.append(f"'{f.name}': {str(e)[:100]}")
+    return docs, ok, errs
 
 
-def load_urls(raw: str) -> tuple[list[Document], int, list[str]]:
-    """Scrape web pages from a newline-separated URL list."""
-    docs, count, errors = [], 0, []
+def read_urls(raw):
+    docs, ok, errs = [], 0, []
     lines = [u.strip() for u in raw.splitlines() if u.strip()]
-
     if len(lines) > MAX_URLS:
-        errors.append(f"الحد الأقصى {MAX_URLS} روابط — تم تجاهل الزائد.")
+        errs.append(f"الحد الاقصى {MAX_URLS} روابط — تم تجاهل الباقي.")
         lines = lines[:MAX_URLS]
-
-    request_headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-    }
-
     for url in lines:
-        if not is_valid_url(url):
-            errors.append(f"رابط غير صالح أو غير آمن: '{safe_html(url)}'")
+        if not url_ok(url):
+            errs.append(f"رابط غير صالح: '{esc(url)}'")
             continue
         try:
-            loader = WebBaseLoader(web_path=url, requests_kwargs={"headers": request_headers})
-            for d in loader.load():
+            for d in WebBaseLoader(url).load():
                 d.metadata["source"] = url
                 docs.append(d)
-            count += 1
-        except Exception as exc:
-            errors.append(f"فشل تحميل '{url}': {str(exc)[:100]}")
+            ok += 1
+        except Exception as e:
+            errs.append(f"'{url}': {str(e)[:100]}")
+    return docs, ok, errs
 
-    return docs, count, errors
 
-
-# ═══════════════════════════════════════════════════════════════════════════════
-#  🧩  VECTOR STORE
-# ═══════════════════════════════════════════════════════════════════════════════
-def build_vector_store(docs: list[Document]) -> tuple[FAISS, int]:
-    """Chunk documents, embed them, and return a FAISS index."""
-    valid_docs = [d for d in docs if d.page_content and d.page_content.strip()]
-    if not valid_docs:
-        raise ValueError("جميع المستندات الممررة فارغة أو لم يتم استخراج أي نصوص منها بنجاح.")
-
-    splitter = RecursiveCharacterTextSplitter(
-        chunk_size=CHUNK_SIZE,
-        chunk_overlap=CHUNK_OVERLAP,
-    )
-    chunks = splitter.split_documents(valid_docs)
-    
-    if not chunks:
-        raise ValueError("لم يتم توليد أي أجزاء نصية (Chunks) صالحة من المستندات المرفوعة.")
-
-    # 🔥 تعديل الكلاس إلى GoogleGenAIEmbeddings وتمرير اسم الموديل 001 الصحيح لمنع أي NameError أو 404
-    emb = GoogleGenAIEmbeddings(model=EMBED_MODEL, google_api_key=_API_KEY)
+def build_index(docs):
+    chunks = RecursiveCharacterTextSplitter(
+        chunk_size=CHUNK_SIZE, chunk_overlap=CHUNK_OVERLAP
+    ).split_documents(docs)
+    emb = GoogleGenerativeAIEmbeddings(model=EMBED_MODEL, google_api_key=_key)
     return FAISS.from_documents(chunks, emb), len(chunks)
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-#  🤖  MODEL HELPERS
-# ═══════════════════════════════════════════════════════════════════════════════
+# -------------------------------------------------------------------
+# model helpers
+# -------------------------------------------------------------------
 @st.cache_data(ttl=600, show_spinner=False)
-def list_models() -> list[str]:
-    """Fetch available Gemini models that support generateContent."""
+def list_models():
     try:
         return [
             m.name.split("/")[-1]
@@ -392,401 +340,320 @@ def list_models() -> list[str]:
         return [DEFAULT_MODEL]
 
 
-def build_system_prompt(strict: bool) -> str:
+def make_system_prompt(strict):
     if strict:
         return (
-            "أنت مساعد مؤسسي دقيق. أجب حصراً بناءً على السياق المُرفق. "
-            "إن لم تجد الإجابة اكتب فقط: 'المعلومة غير متوفرة في الوثائق المرفوعة.'"
+            "انت مساعد مؤسسي دقيق. "
+            "اجب فقط من السياق المرفق. "
+            "ان لم تجد الاجابة قل: 'المعلومة غير متوفرة في الوثائق.'"
         )
     return (
-        "أنت خبير تحليلي. ادمج السياق المُرفق مع معرفتك لتقديم تحليل عميق ومفيد. "
-        "استنتج الأنماط وقدّم توصيات عملية."
+        "انت خبير تحليلي. "
+        "ادمج السياق المرفق مع معرفتك لتقديم تحليل عميق ومفيد."
     )
 
 
-def generate_smart_queries(docs: list[Document], current_mode: str, model_name: str) -> list[str]:
-    """توليد 3 أسئلة مخصصة وقصيرة جداً بناءً على محتوى الملف والنموذج المختار"""
-    try:
-        if not docs:
-            return []
-        
-        st.session_state["query_gen_error"] = None
-        sample_text = "\n".join([d.page_content[:600] for d in docs[:3]])
-        
-        model = genai.GenerativeModel(model_name)
-        
-        if current_mode == "strict":
-            mode_instruction = "الوضع الحالي: [صارم]. ركز تماماً على استخراج الحقائق المباشرة، الأرقام الصريحة، والتواريخ المذكورة نصاً بدون استنتاج."
-        else:
-            mode_instruction = "الوضع الحالي: [مختلط]. ركز على التحليل الاستنتاجي، الأسباب، والتوصيات والربط الفني بين الأفكار."
-
-        prompt = (
-            f"بناءً على المحتوى المرفق, اقترح بالضبط 3 أسئلة أو استعلامات هامة للمستخدم.\n"
-            f"💡 توجيه نوعية الأسئلة: {mode_instruction}\n\n"
-            f"⚠️ شروط إجبارية للتنسيق:\n"
-            f"1. اكتب الأسئلة باللغة العربية.\n"
-            f"2. اجعل الأسئلة قصيرة جداً وموجزة ومحددة (من 3 إلى 6 كلمات فقط لكل سؤال).\n"
-            f"3. أعطني الـ 3 أسئلة مباشرة في 3 أسطر منفصلة، بدون أي أرقام (لا تكتب 1، 2، 3) وبدون أي مقدمات أو خاتمة.\n\n"
-            f"المحتوى:\n{sample_text}"
-        )
-        response = model.generate_content(prompt)
-        lines = [line.strip() for line in response.text.split("\n") if line.strip()]
-        cleaned_queries = [re.sub(r'^\d+[\.\-\)]\s*', '', q).strip() for q in lines]
-        return [q for q in cleaned_queries if q][:3]
-        
-    except Exception as e:
-        st.session_state["query_gen_error"] = str(e)
-        if current_mode == "strict":
-            return ["ما هي الحقائق الصريحة في الملف؟", "استخرج أهم الأرقام والتواريخ المحددة.", "ما هي الشروط والأحكام المذكورة?"]
-        else:
-            return ["ما هو التحليل العام للمستند؟", "ما هي أبرز المقترحات والتوصيات؟", "ملخص شامل لأهم نقاط الملف."]
+def nice_error(e):
+    s = str(e)
+    if "429" in s or "quota" in s.lower():
+        return "حصة النموذج انتهت — غير النموذج من الشريط الجانبي وحاول مجددا."
+    if "api_key" in s.lower() or "auth" in s.lower():
+        return "مشكلة في مفتاح API — تحقق من Streamlit Secrets."
+    return f"خطا: {s[:200]}"
 
 
-def classify_error(exc: Exception) -> str:
-    msg = str(exc)
-    if "429" in msg or "quota" in msg.lower():
-        return "⚠️ تم استنفاد حصة النموذج الحالي. غيّره من الشريط الجانبي وأعد المحاولة."
-    if "api_key" in msg.lower() or "auth" in msg.lower():
-        return "🔑 خطأ في مفتاح الـ API — تحقق من Streamlit Secrets."
-    return f"❌ خطأ غير متوقع: {msg[:220]}"
+# ===================================================================
+# UI
+# ===================================================================
 
-
-# ═══════════════════════════════════════════════════════════════════════════════
-#  🖼️  HERO HEADER
-# ═══════════════════════════════════════════════════════════════════════════════
+# hero + why-rag
 st.markdown("""
 <div class="hero">
-    <div class="hero-badge">✦ Enterprise AI Assistant ✦</div>
-    <div class="hero-title">🧠 المساعد المؤسسي الذكي</div>
+    <div class="hero-badge">Enterprise AI Assistant</div>
+    <div class="hero-title">&#x1F9E0; المساعد المؤسسي الذكي</div>
     <div class="hero-sub">
-        Retrieval-Augmented Generation &nbsp;·&nbsp;
-        أمان تام &nbsp;·&nbsp; دقة عالية &nbsp;·&nbsp; تكلفة منخفضة
+        Retrieval-Augmented Generation &nbsp;&middot;&nbsp;
+        امان تام &nbsp;&middot;&nbsp; دقة عالية &nbsp;&middot;&nbsp; تكلفة منخفضة
     </div>
 </div>
-""", unsafe_allow_html=True)
 
-st.markdown("""
 <div class="info-banner">
-    <h4>🎯 لماذا RAG لشركتك بالتحديد؟</h4>
+    <h4>&#x1F3AF; لماذا RAG لشركتك؟</h4>
     <ul>
-        <li><b>🔒 سرية بياناتك مضمونة 100%:</b>
-            ملفاتك لا تُغادر بيئتك ولا تُستخدم لتدريب نماذج خارجية.</li>
-        <li><b>💰 وفر حتى 99% من تكلفة Tokens:</b>
-            يُرسَل فقط السياق المرتبط بسؤالك، لا آلاف الصفحات.</li>
-        <li><b>🎯 صفر هلوسة في الوضع الصارم:</b>
-            يلتزم الموديل بإجابات مستندة لمصادرك الخاصة فقط.</li>
+        <li><b>&#x1F512; سرية 100%:</b> ملفاتك لا تغادر بيئتك ولا تستخدم لتدريب نماذج خارجية.</li>
+        <li><b>&#x1F4B0; وفر حتى 99% من Tokens:</b> يرسل فقط ما يخص سؤالك، لا آلاف الصفحات.</li>
+        <li><b>&#x1F3AF; صفر هلوسة في الوضع الصارم:</b> اجابات مستندة لملفاتك فقط.</li>
     </ul>
 </div>
 """, unsafe_allow_html=True)
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-#  🗄️  SIDEBAR
-# ═══════════════════════════════════════════════════════════════════════════════
+# -------------------------------------------------------------------
+# SIDEBAR  — on the LEFT (works because we didn't flip root direction)
+# -------------------------------------------------------------------
 with st.sidebar:
-    st.markdown("### ⚙️ إعدادات النظام")
+    st.markdown("### &#x2699;&#xFE0F; الاعدادات")
 
     all_models = list_models()
-    def_idx = all_models.index(DEFAULT_MODEL) if DEFAULT_MODEL in all_models else 0
-    selected_model = st.selectbox("🤖 نموذج الذكاء الاصطناعي", all_models, index=def_idx)
+    idx = all_models.index(DEFAULT_MODEL) if DEFAULT_MODEL in all_models else 0
+    chosen_model = st.selectbox("&#x1F916; نموذج AI", all_models, index=idx)
 
     st.divider()
 
     mode = st.radio(
-        "🧠 نمط الإجابة",
+        "&#x1F9E0; نمط الاجابة",
         options=["strict", "hybrid"],
         format_func=lambda x: (
-            "🔒 صارم — من الملفات فقط"
+            "&#x1F512; صارم — من الملفات فقط"
             if x == "strict"
-            else "💡 مختلط — ربط وتحليل"
+            else "&#x1F4A1; مختلط — ربط وتحليل"
         ),
     )
 
     st.divider()
 
-    if st.session_state.vector_store:
+    # knowledge base status
+    if st.session_state.vs:
         st.markdown(
-            '<div class="live-badge"><span class="pulse-dot"></span>قاعدة المعرفة نشطة</div>',
+            '<div class="live-badge">'
+            '<span class="pulse-dot"></span>قاعدة المعرفة نشطة'
+            '</div>',
             unsafe_allow_html=True,
         )
-        s = st.session_state.meta_stats
+        m = st.session_state.meta
         st.markdown(
-            f"<div style='margin-top:12px;font-size:.84rem;color:#6B7280;direction:rtl;'> "
-            f"📄 <b>{s['files']}</b> ملفات &nbsp;·&nbsp; "
-            f"🌐 <b>{s['urls']}</b> روابط &nbsp;·&nbsp; "
-            f"🧩 <b>{s['chunks']}</b> جزء"
-            f"</div>",
+            f"<p style='margin-top:10px;font-size:.83rem;color:#6B7280;"
+            f"direction:rtl;text-align:right;'>"
+            f"&#x1F4C4; <b>{m['files']}</b> ملفات &nbsp;&middot;&nbsp; "
+            f"&#x1F310; <b>{m['urls']}</b> روابط &nbsp;&middot;&nbsp; "
+            f"&#x1F9E9; <b>{m['chunks']}</b> جزء"
+            f"</p>",
             unsafe_allow_html=True,
         )
     else:
-        st.info("⏳ لم تُبنَ قاعدة معرفة بعد.")
+        st.info("لم تبن قاعدة معرفة بعد.")
 
     st.divider()
 
-    if st.session_state.chat_history:
+    if st.session_state.history:
         log = "\n\n".join(
             f"{'المستخدم' if r == 'user' else 'المساعد'}: {t}"
-            for r, t in st.session_state.chat_history
+            for r, t in st.session_state.history
         )
-        st.sidebar.download_button(
-            "📥 تحميل سجل المحادثة",
-            data=log.encode("utf-8"),
-            file_name="rag_chat.txt",
-            mime="text/plain",
+        st.download_button(
+            "&#x1F4E5; تحميل المحادثة",
+            log.encode("utf-8"),
+            "rag_chat.txt",
+            "text/plain",
         )
 
-    if st.button("🗑️ إعادة تعيين كاملة"):
-        for k, v in _DEFAULTS.items():
+    if st.button("&#x1F5D1;&#xFE0F; مسح كل شيء"):
+        for k, v in defaults.items():
             st.session_state[k] = v
         st.rerun()
 
     st.divider()
     st.markdown(
-        "<div class='sidebar-footer'>"
-        "مبني بـ LangChain · FAISS · Google Gemini<br>"
-        "🔒 بياناتك لا تُشارك مع أطراف خارجية"
-        "</div>",
+        "<p style='font-size:.75rem;color:#9CA3AF;text-align:center;direction:rtl;'>"
+        "LangChain &middot; FAISS &middot; Google Gemini<br>"
+        "&#x1F512; بياناتك لا تشارك مع اطراف خارجية"
+        "</p>",
         unsafe_allow_html=True,
     )
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-#  📥  KNOWLEDGE-BASE BUILDER
-# ═══════════════════════════════════════════════════════════════════════════════
-st.markdown("### 📥 بناء قاعدة المعرفة")
+# -------------------------------------------------------------------
+# knowledge base builder
+# -------------------------------------------------------------------
+st.markdown("### &#x1F4E5; بناء قاعدة المعرفة")
 
 with st.expander(
-    "📂 رفع المستندات وإضافة الروابط",
-    expanded=(st.session_state.vector_store is None),
+    "&#x1F4C2; رفع الملفات واضافة الروابط",
+    expanded=(st.session_state.vs is None),
 ):
-    col_files, col_urls = st.columns(2, gap="large")
+    col_f, col_u = st.columns(2, gap="large")
 
-    with col_files:
-        st.markdown(f"**📄 الملفات المدعومة** *(حد أقصى {MAX_FILE_MB} MB للملف)*")
+    with col_f:
+        st.markdown(f"**&#x1F4C4; الملفات** *(PDF / Word / TXT — حد {MAX_FILE_MB} MB للملف)*")
         uploaded = st.file_uploader(
-            "الملفات",
+            "files",
             type=["pdf", "docx", "txt"],
             accept_multiple_files=True,
             label_visibility="collapsed",
         )
-        
-        current_upload_names = [f.name for f in uploaded] if uploaded else []
-        if st.session_state.vector_store and current_upload_names != st.session_state.indexed_file_names:
-            st.session_state.vector_store = None
-            st.session_state.indexed_file_names = []
-            st.session_state.all_docs = []
-            st.session_state.suggested_queries = []
-            st.session_state.query_gen_error = None
-            st.session_state.meta_stats = {"files": 0, "urls": 0, "chunks": 0}
-            st.rerun()
-
         if uploaded:
-            st.caption(f"✅ {len(uploaded)} ملف مُختار")
+            st.caption(f"تم اختيار {len(uploaded)} ملف")
 
-    with col_urls:
-        st.markdown(f"**🌐 روابط الويب** *(حد أقصى {MAX_URLS} روابط)*")
+    with col_u:
+        st.markdown(f"**&#x1F310; الروابط** *(حد {MAX_URLS} — رابط في كل سطر)*")
         urls_raw = st.text_area(
-            "الروابط",
-            placeholder="https://company-policy.com\nhttps://knowledge-base.com",
+            "urls",
+            placeholder="https://company-policy.com\nhttps://knowledge.com",
             height=120,
             label_visibility="collapsed",
         )
         n_urls = len([l for l in urls_raw.splitlines() if l.strip()])
         if n_urls:
-            st.caption(f"📎 {n_urls} رابط")
+            st.caption(f"{n_urls} رابط")
 
     st.markdown("<br>", unsafe_allow_html=True)
 
-    if st.button("🔥 بناء قاعدة المعرفة الآن", type="primary"):
+    if st.button("&#x1F525; بناء قاعدة المعرفة الان", type="primary"):
         if not uploaded and not urls_raw.strip():
-            st.warning("⚠️ الرجاء رفع ملف واحد على الأقل أو إضافة رابط.")
+            st.warning("ارفع ملفا او اضف رابطا واحدا على الاقل.")
         else:
-            all_docs, f_count, u_count, all_errors = [], 0, 0, []
+            all_docs, f_ok, u_ok, errs = [], 0, 0, []
 
-            with st.status("🚀 جاري معالجة المصادر...", expanded=True) as prog:
-
+            with st.status("جاري المعالجة...", expanded=True) as prog:
                 if uploaded:
-                    st.write("📂 تحليل الملفات المرفوعة...")
-                    fd, fc, fe = load_files(uploaded)
-                    all_docs.extend(fd)
-                    f_count = fc
-                    all_errors.extend(fe)
+                    st.write("تحليل الملفات...")
+                    d, c, e = read_files(uploaded)
+                    all_docs += d; f_ok = c; errs += e
 
                 if urls_raw.strip():
-                    st.write("🌐 جلب صفحات الويب...")
-                    ud, uc, ue = load_urls(urls_raw)
-                    all_docs.extend(ud)
-                    u_count = uc
-                    all_errors.extend(ue)
+                    st.write("جلب صفحات الويب...")
+                    d, c, e = read_urls(urls_raw)
+                    all_docs += d; u_ok = c; errs += e
 
                 if all_docs:
-                    st.write("🧩 بناء الذاكرة المتجهة (Embeddings)...")
+                    st.write("بناء الذاكرة المتجهة...")
                     try:
-                        vs_new, n_chunks = build_vector_store(all_docs)
-                        st.session_state.vector_store = vs_new
-                        st.session_state.all_docs = all_docs 
-                        st.session_state.indexed_file_names = [f.name for f in uploaded] if uploaded else []
-                        st.session_state.suggested_queries = []
-                        st.session_state.query_gen_error = None
-                        st.session_state.meta_stats = {
-                            "files": f_count,
-                            "urls":  u_count,
-                            "chunks": n_chunks,
-                        }
-                        prog.update(
-                            label="✅ قاعدة المعرفة جاهزة!",
-                            state="complete",
-                            expanded=False,
-                        )
-                    except Exception as be:
-                        prog.update(label="❌ فشل في بناء الـ Embeddings", state="error")
-                        st.error(f"تفاصيل كاملة: {str(be)}")
+                        vs, n_ch = build_index(all_docs)
+                        st.session_state.vs   = vs
+                        st.session_state.meta = {"files": f_ok, "urls": u_ok, "chunks": n_ch}
+                        prog.update(label="جاهز!", state="complete", expanded=False)
+                    except Exception as e:
+                        prog.update(label="فشل بناء Embeddings", state="error")
+                        st.error(str(e)[:200])
                 else:
-                    prog.update(label="⚠️ لا توجد بيانات صالحة للمعالجة", state="error")
+                    prog.update(label="لا توجد بيانات صالحة", state="error")
 
-            for err in all_errors:
-                st.warning(f"⚠️ {err}")
+            for err in errs:
+                st.warning(err)
 
-            if st.session_state.vector_store:
+            if st.session_state.vs:
                 st.rerun()
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# 📊 METRICS + QUICK ACTIONS
-# ═══════════════════════════════════════════════════════════════════════════════
-if st.session_state.vector_store:
-    s = st.session_state.meta_stats
+# -------------------------------------------------------------------
+# metrics + quick-action buttons (only when index is ready)
+# -------------------------------------------------------------------
+if st.session_state.vs:
+    m = st.session_state.meta
     st.markdown(
         f"""
         <div class="metrics-grid">
             <div class="m-card">
-                <span class="m-num">{s.get('files', 0)}</span>
-                <span class="m-label">📄 ملفات مفهرسة</span>
+                <span class="m-num">{m['files']}</span>
+                <span class="m-label">&#x1F4C4; ملفات مفهرسة</span>
             </div>
             <div class="m-card">
-                <span class="m-num">{s.get('urls', 0)}</span>
-                <span class="m-label">🌐 روابط معالجة</span>
+                <span class="m-num">{m['urls']}</span>
+                <span class="m-label">&#x1F310; روابط معالجة</span>
             </div>
             <div class="m-card">
-                <span class="m-num">{s.get('chunks', 0)}</span>
-                <span class="m-label">🧩 قطعة في الذاكرة</span>
+                <span class="m-num">{m['chunks']}</span>
+                <span class="m-label">&#x1F9E9; قطعة في الذاكرة</span>
             </div>
         </div>
         """,
         unsafe_allow_html=True,
     )
 
-    if "last_mode" not in st.session_state:
-        st.session_state.last_mode = mode
-
-    if st.session_state.last_mode != mode:
-        st.session_state.last_mode = mode
-        st.session_state.suggested_queries = []
-
-    mode_title = "الصارم" if mode == "strict" else "المختلط"
-    st.markdown(f"**💡 استعلامات مقترحة مخصصة لملفك ({mode_title}):**")
-    
-    if not st.session_state.get("suggested_queries"):
-        with st.spinner("⏳ جاري تحليل مستنداتك وتوليد أسئلة ذكية تناسب الوضع المختار..."):
-            docs_to_analyze = st.session_state.get("all_docs", [])
-            st.session_state.suggested_queries = generate_smart_queries(docs_to_analyze, mode, selected_model)
-        st.rerun()
-
-    if st.session_state.get("query_gen_error"):
-        st.caption(f"⚠️ *ملاحظة: تعذر التوليد اللحظي وجاري استخدام أسئلة ذكية عامة بسبب الخطأ التالي:* `{st.session_state.query_gen_error}`")
-
-    queries = st.session_state.suggested_queries
-    cols = st.columns(len(queries))
-    for col, query in zip(cols, queries):
+    st.markdown("**&#x1F4A1; استعلامات سريعة:**")
+    quick_options = [
+        ("&#x1F512; شحن عميل الاسكندرية",
+         "كم استغرق الشحن لعميل الاسكندرية وائل غنيم وما السبب في السجلات؟"),
+        ("&#x1F4A1; تحليل شاحن 65 وات",
+         "حلل مشكلة حرارة الشاحن 65 وات لعميل طارق البشري هندسيا واقترح حلولا."),
+        ("&#x1F4C8; شكاوى الساعة الذكية",
+         "ما شكوى تطبيق الساعة الذكية Pro ولماذا تستنزف البطارية؟"),
+    ]
+    for col, (label, q) in zip(st.columns(3), quick_options):
         with col:
-            if st.button(query, key=f"dynamic_btn_{hash(query)}", use_container_width=True):
-                st.session_state.quick_input = query
-                st.rerun()
+            if st.button(label, use_container_width=True):
+                st.session_state.quick_q = q
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-#  💬  CHAT INTERFACE
-# ═══════════════════════════════════════════════════════════════════════════════
+# -------------------------------------------------------------------
+# chat
+# -------------------------------------------------------------------
 st.markdown('<hr class="sep">', unsafe_allow_html=True)
-st.markdown("### 💬 الاستعلام والتحليل الذكي")
+st.markdown("### &#x1F4AC; الاستعلام الذكي")
 
-if st.session_state.chat_history:
-    for role, text in st.session_state.chat_history:
-        with st.chat_message(role):
-            st.write(text)
-else:
-    if st.session_state.vector_store is None:
-        st.markdown(
-            """<div class="empty-state">
-                <div class="ei">📂</div>
-                <h3>ابدأ بتحميل ملفاتك أعلاه</h3>
-                <p>بعد بناء قاعدة المعرفة، اكتب سؤالك هنا.</p>
-            </div>""",
-            unsafe_allow_html=True,
-        )
+# render conversation history
+for role, text in st.session_state.history:
+    with st.chat_message(role):
+        st.write(text)
+
+# empty states
+if not st.session_state.history:
+    if not st.session_state.vs:
+        st.markdown("""
+        <div class="empty-state">
+            <div class="ei">&#x1F4C2;</div>
+            <h3>ابدا برفع ملفاتك اعلاه</h3>
+            <p>بعد بناء قاعدة المعرفة اكتب سؤالك هنا.</p>
+        </div>""", unsafe_allow_html=True)
     else:
-        st.markdown(
-            """<div class="empty-state">
-                <div class="ei">💬</div>
-                <h3>قاعدة المعرفة جاهزة!</h3>
-                <p>اكتب سؤالك في الأسفل أو اضغط أحد الاستعلامات السريعة.</p>
-            </div>""",
-            unsafe_allow_html=True,
-        )
+        st.markdown("""
+        <div class="empty-state">
+            <div class="ei">&#x1F4AC;</div>
+            <h3>قاعدة المعرفة جاهزة!</h3>
+            <p>اكتب سؤالك ادناه او اضغط احد الازرار السريعة.</p>
+        </div>""", unsafe_allow_html=True)
 
-typed_q = st.chat_input("اسأل المساعد عن أي شيء في وثائقك...")
-current_q: str | None = typed_q
+# get next query
+typed = st.chat_input("اسال عن اي شيء في وثائقك...")
+current_q = typed
 
-if st.session_state.quick_input:
-    current_q = st.session_state.quick_input
-    st.session_state.quick_input = ""
+if st.session_state.quick_q:
+    current_q = st.session_state.quick_q
+    st.session_state.quick_q = ""
 
 if current_q:
-    query = safe_html(current_q)
+    query = esc(current_q)
 
     with st.chat_message("user"):
         st.write(query)
-    st.session_state.chat_history.append(("user", query))
+    st.session_state.history.append(("user", query))
 
     with st.chat_message("assistant"):
         try:
-            is_strict = (mode == "strict")
-            sys_inst  = build_system_prompt(is_strict)
-            sources: list[str] = []
+            sources = []
 
-            if st.session_state.vector_store:
-                with st.spinner("🔍 جاري البحث في قاعدة المعرفة..."):
-                    hits    = st.session_state.vector_store.similarity_search(query, k=TOP_K)
+            if st.session_state.vs:
+                with st.spinner("جاري البحث في قاعدة المعرفة..."):
+                    hits    = st.session_state.vs.similarity_search(query, k=TOP_K)
                     sources = sorted({d.metadata.get("source", "—") for d in hits})
                     context = "\n\n---\n\n".join(d.page_content for d in hits)
                     prompt  = f"السياق:\n{context}\n\nالسؤال: {query}"
             else:
-                with st.spinner("🤔 جاري التفكير..."):
-                    prompt = query
+                prompt = query
 
             model_obj = genai.GenerativeModel(
-                model_name=selected_model,
-                system_instruction=sys_inst,
+                model_name=chosen_model,
+                system_instruction=make_system_prompt(mode == "strict"),
             )
-            response = model_obj.generate_content(prompt)
-            answer   = response.text.strip()
-
+            answer = model_obj.generate_content(prompt).text.strip()
             st.write(answer)
 
             if sources:
                 st.markdown("---")
-                st.markdown("**📌 المصادر المستند إليها:**")
-                tags = " ".join(
-                    f'<span class="src-tag">📄 {safe_html(s)}</span>'
-                    for s in sources
+                st.markdown("**المصادر:**")
+                st.markdown(
+                    " ".join(
+                        f'<span class="src-tag">&#x1F4C4; {esc(s)}</span>'
+                        for s in sources
+                    ),
+                    unsafe_allow_html=True,
                 )
-                st.markdown(tags, unsafe_allow_html=True)
 
-            st.session_state.chat_history.append(("assistant", answer))
+            st.session_state.history.append(("assistant", answer))
 
-        except Exception as exc:
-            err_msg = classify_error(exc)
-            st.error(err_msg)
-            st.session_state.chat_history.append(("assistant", err_msg))
+        except Exception as e:
+            msg = nice_error(e)
+            st.error(msg)
+            st.session_state.history.append(("assistant", msg))
 
     st.rerun()
